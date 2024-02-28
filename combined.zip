@@ -1,0 +1,4269 @@
+commiting the post feed back codes
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+[remote "origin"]
+	url = https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "master"]
+	remote = origin
+	merge = refs/heads/master
+[branch "local"]
+	remote = origin
+	merge = refs/heads/local
+Unnamed repository; edit this file 'description' to name the repository.
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f		branch 'local' of https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+ref: refs/heads/local
+#!/bin/sh
+#
+# An example hook script to check the commit log message taken by
+# applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.  The hook is
+# allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "applypatch-msg".
+
+. git-sh-setup
+commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
+test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
+:
+#!/bin/sh
+#
+# An example hook script to check the commit log message.
+# Called by "git commit" with one argument, the name of the file
+# that has the commit message.  The hook should exit with non-zero
+# status after issuing an appropriate message if it wants to stop the
+# commit.  The hook is allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "commit-msg".
+
+# Uncomment the below to add a Signed-off-by line to the message.
+# Doing this in a hook is a bad idea in general, but the prepare-commit-msg
+# hook is more suited to it.
+#
+# SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
+
+# This example catches duplicate Signed-off-by lines.
+
+test "" = "$(grep '^Signed-off-by: ' "$1" |
+	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
+	echo >&2 Duplicate Signed-off-by lines.
+	exit 1
+}
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use IPC::Open2;
+
+# An example hook script to integrate Watchman
+# (https://facebook.github.io/watchman/) with git to speed up detecting
+# new and modified files.
+#
+# The hook is passed a version (currently 2) and last update token
+# formatted as a string and outputs to stdout a new update token and
+# all files that have been modified since the update token. Paths must
+# be relative to the root of the working tree and separated by a single NUL.
+#
+# To enable this hook, rename this file to "query-watchman" and set
+# 'git config core.fsmonitor .git/hooks/query-watchman'
+#
+my ($version, $last_update_token) = @ARGV;
+
+# Uncomment for debugging
+# print STDERR "$0 $version $last_update_token\n";
+
+# Check the hook interface version
+if ($version ne 2) {
+	die "Unsupported query-fsmonitor hook version '$version'.\n" .
+	    "Falling back to scanning...\n";
+}
+
+my $git_work_tree = get_working_dir();
+
+my $retry = 1;
+
+my $json_pkg;
+eval {
+	require JSON::XS;
+	$json_pkg = "JSON::XS";
+	1;
+} or do {
+	require JSON::PP;
+	$json_pkg = "JSON::PP";
+};
+
+launch_watchman();
+
+sub launch_watchman {
+	my $o = watchman_query();
+	if (is_work_tree_watched($o)) {
+		output_result($o->{clock}, @{$o->{files}});
+	}
+}
+
+sub output_result {
+	my ($clockid, @files) = @_;
+
+	# Uncomment for debugging watchman output
+	# open (my $fh, ">", ".git/watchman-output.out");
+	# binmode $fh, ":utf8";
+	# print $fh "$clockid\n@files\n";
+	# close $fh;
+
+	binmode STDOUT, ":utf8";
+	print $clockid;
+	print "\0";
+	local $, = "\0";
+	print @files;
+}
+
+sub watchman_clock {
+	my $response = qx/watchman clock "$git_work_tree"/;
+	die "Failed to get clock id on '$git_work_tree'.\n" .
+		"Falling back to scanning...\n" if $? != 0;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub watchman_query {
+	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
+	or die "open2() failed: $!\n" .
+	"Falling back to scanning...\n";
+
+	# In the query expression below we're asking for names of files that
+	# changed since $last_update_token but not from the .git folder.
+	#
+	# To accomplish this, we're using the "since" generator to use the
+	# recency index to select candidate nodes and "fields" to limit the
+	# output to file names only. Then we're using the "expression" term to
+	# further constrain the results.
+	my $last_update_line = "";
+	if (substr($last_update_token, 0, 1) eq "c") {
+		$last_update_token = "\"$last_update_token\"";
+		$last_update_line = qq[\n"since": $last_update_token,];
+	}
+	my $query = <<"	END";
+		["query", "$git_work_tree", {$last_update_line
+			"fields": ["name"],
+			"expression": ["not", ["dirname", ".git"]]
+		}]
+	END
+
+	# Uncomment for debugging the watchman query
+	# open (my $fh, ">", ".git/watchman-query.json");
+	# print $fh $query;
+	# close $fh;
+
+	print CHLD_IN $query;
+	close CHLD_IN;
+	my $response = do {local $/; <CHLD_OUT>};
+
+	# Uncomment for debugging the watch response
+	# open ($fh, ">", ".git/watchman-response.json");
+	# print $fh $response;
+	# close $fh;
+
+	die "Watchman: command returned no output.\n" .
+	"Falling back to scanning...\n" if $response eq "";
+	die "Watchman: command returned invalid output: $response\n" .
+	"Falling back to scanning...\n" unless $response =~ /^\{/;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub is_work_tree_watched {
+	my ($output) = @_;
+	my $error = $output->{error};
+	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
+		$retry--;
+		my $response = qx/watchman watch "$git_work_tree"/;
+		die "Failed to make watchman watch '$git_work_tree'.\n" .
+		    "Falling back to scanning...\n" if $? != 0;
+		$output = $json_pkg->new->utf8->decode($response);
+		$error = $output->{error};
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		# Uncomment for debugging watchman output
+		# open (my $fh, ">", ".git/watchman-output.out");
+		# close $fh;
+
+		# Watchman will always return all files on the first query so
+		# return the fast "everything is dirty" flag to git and do the
+		# Watchman query just to get it over with now so we won't pay
+		# the cost in git to look up each individual file.
+		my $o = watchman_clock();
+		$error = $output->{error};
+
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		output_result($o->{clock}, ("/"));
+		$last_update_token = $o->{clock};
+
+		eval { launch_watchman() };
+		return 0;
+	}
+
+	die "Watchman: $error.\n" .
+	"Falling back to scanning...\n" if $error;
+
+	return 1;
+}
+
+sub get_working_dir {
+	my $working_dir;
+	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
+		$working_dir = Win32::GetCwd();
+		$working_dir =~ tr/\\/\//;
+	} else {
+		require Cwd;
+		$working_dir = Cwd::cwd();
+	}
+
+	return $working_dir;
+}
+#!/bin/sh
+#
+# An example hook script to prepare a packed repository for use over
+# dumb transports.
+#
+# To enable this hook, rename this file to "post-update".
+
+exec git update-server-info
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed
+# by applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-applypatch".
+
+. git-sh-setup
+precommit="$(git rev-parse --git-path hooks/pre-commit)"
+test -x "$precommit" && exec "$precommit" ${1+"$@"}
+:
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git commit" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message if
+# it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-commit".
+
+if git rev-parse --verify HEAD >/dev/null 2>&1
+then
+	against=HEAD
+else
+	# Initial commit: diff against an empty tree object
+	against=$(git hash-object -t tree /dev/null)
+fi
+
+# If you want to allow non-ASCII filenames set this variable to true.
+allownonascii=$(git config --type=bool hooks.allownonascii)
+
+# Redirect output to stderr.
+exec 1>&2
+
+# Cross platform projects tend to avoid non-ASCII filenames; prevent
+# them from being added to the repository. We exploit the fact that the
+# printable range starts at the space character and ends with tilde.
+if [ "$allownonascii" != "true" ] &&
+	# Note that the use of brackets around a tr range is ok here, (it's
+	# even required, for portability to Solaris 10's /usr/bin/tr), since
+	# the square bracket bytes happen to fall in the designated range.
+	test $(git diff --cached --name-only --diff-filter=A -z $against |
+	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
+then
+	cat <<\EOF
+Error: Attempt to add a non-ASCII file name.
+
+This can cause problems if you want to work with people on other platforms.
+
+To be portable it is advisable to rename the file.
+
+If you know what you are doing you can disable this check using:
+
+  git config hooks.allownonascii true
+EOF
+	exit 1
+fi
+
+# If there are whitespace errors, print the offending file names and fail.
+exec git diff-index --check --cached $against --
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git merge" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message to
+# stderr if it wants to stop the merge commit.
+#
+# To enable this hook, rename this file to "pre-merge-commit".
+
+. git-sh-setup
+test -x "$GIT_DIR/hooks/pre-commit" &&
+        exec "$GIT_DIR/hooks/pre-commit"
+:
+#!/bin/sh
+#
+# An example hook script to prepare the commit log message.
+# Called by "git commit" with the name of the file that has the
+# commit message, followed by the description of the commit
+# message's source.  The hook's purpose is to edit the commit
+# message file.  If the hook fails with a non-zero status,
+# the commit is aborted.
+#
+# To enable this hook, rename this file to "prepare-commit-msg".
+
+# This hook includes three examples. The first one removes the
+# "# Please enter the commit message..." help message.
+#
+# The second includes the output of "git diff --name-status -r"
+# into the message, just before the "git status" output.  It is
+# commented because it doesn't cope with --amend or with squashed
+# commits.
+#
+# The third example adds a Signed-off-by line to the message, that can
+# still be edited.  This is rarely a good idea.
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+SHA1=$3
+
+/usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
+
+# case "$COMMIT_SOURCE,$SHA1" in
+#  ,|template,)
+#    /usr/bin/perl -i.bak -pe '
+#       print "\n" . `git diff --cached --name-status -r`
+# 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
+#  *) ;;
+# esac
+
+# SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
+# if test -z "$COMMIT_SOURCE"
+# then
+#   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
+# fi
+#!/bin/sh
+
+# An example hook script to verify what is about to be pushed.  Called by "git
+# push" after it has checked the remote status, but before anything has been
+# pushed.  If this script exits with a non-zero status nothing will be pushed.
+#
+# This hook is called with the following parameters:
+#
+# $1 -- Name of the remote to which the push is being done
+# $2 -- URL to which the push is being done
+#
+# If pushing without using a named remote those arguments will be equal.
+#
+# Information about the commits which are being pushed is supplied as lines to
+# the standard input in the form:
+#
+#   <local ref> <local oid> <remote ref> <remote oid>
+#
+# This sample shows how to prevent push of commits where the log message starts
+# with "WIP" (work in progress).
+
+remote="$1"
+url="$2"
+
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+
+while read local_ref local_oid remote_ref remote_oid
+do
+	if test "$local_oid" = "$zero"
+	then
+		# Handle delete
+		:
+	else
+		if test "$remote_oid" = "$zero"
+		then
+			# New branch, examine all commits
+			range="$local_oid"
+		else
+			# Update to existing branch, examine new commits
+			range="$remote_oid..$local_oid"
+		fi
+
+		# Check for WIP commit
+		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
+		if test -n "$commit"
+		then
+			echo >&2 "Found WIP commit in $local_ref, not pushing"
+			exit 1
+		fi
+	fi
+done
+
+exit 0
+#!/bin/sh
+#
+# Copyright (c) 2006, 2008 Junio C Hamano
+#
+# The "pre-rebase" hook is run just before "git rebase" starts doing
+# its job, and can prevent the command from running by exiting with
+# non-zero status.
+#
+# The hook is called with the following parameters:
+#
+# $1 -- the upstream the series was forked from.
+# $2 -- the branch being rebased (or empty when rebasing the current branch).
+#
+# This sample shows how to prevent topic branches that are already
+# merged to 'next' branch from getting rebased, because allowing it
+# would result in rebasing already published history.
+
+publish=next
+basebranch="$1"
+if test "$#" = 2
+then
+	topic="refs/heads/$2"
+else
+	topic=`git symbolic-ref HEAD` ||
+	exit 0 ;# we do not interrupt rebasing detached HEAD
+fi
+
+case "$topic" in
+refs/heads/??/*)
+	;;
+*)
+	exit 0 ;# we do not interrupt others.
+	;;
+esac
+
+# Now we are dealing with a topic branch being rebased
+# on top of master.  Is it OK to rebase it?
+
+# Does the topic really exist?
+git show-ref -q "$topic" || {
+	echo >&2 "No such branch $topic"
+	exit 1
+}
+
+# Is topic fully merged to master?
+not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
+if test -z "$not_in_master"
+then
+	echo >&2 "$topic is fully merged to master; better remove it."
+	exit 1 ;# we could allow it, but there is no point.
+fi
+
+# Is topic ever merged to next?  If so you should not be rebasing it.
+only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
+only_next_2=`git rev-list ^master           ${publish} | sort`
+if test "$only_next_1" = "$only_next_2"
+then
+	not_in_topic=`git rev-list "^$topic" master`
+	if test -z "$not_in_topic"
+	then
+		echo >&2 "$topic is already up to date with master"
+		exit 1 ;# we could allow it, but there is no point.
+	else
+		exit 0
+	fi
+else
+	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
+	/usr/bin/perl -e '
+		my $topic = $ARGV[0];
+		my $msg = "* $topic has commits already merged to public branch:\n";
+		my (%not_in_next) = map {
+			/^([0-9a-f]+) /;
+			($1 => 1);
+		} split(/\n/, $ARGV[1]);
+		for my $elem (map {
+				/^([0-9a-f]+) (.*)$/;
+				[$1 => $2];
+			} split(/\n/, $ARGV[2])) {
+			if (!exists $not_in_next{$elem->[0]}) {
+				if ($msg) {
+					print STDERR $msg;
+					undef $msg;
+				}
+				print STDERR " $elem->[1]\n";
+			}
+		}
+	' "$topic" "$not_in_next" "$not_in_master"
+	exit 1
+fi
+
+<<\DOC_END
+
+This sample hook safeguards topic branches that have been
+published from being rewound.
+
+The workflow assumed here is:
+
+ * Once a topic branch forks from "master", "master" is never
+   merged into it again (either directly or indirectly).
+
+ * Once a topic branch is fully cooked and merged into "master",
+   it is deleted.  If you need to build on top of it to correct
+   earlier mistakes, a new topic branch is created by forking at
+   the tip of the "master".  This is not strictly necessary, but
+   it makes it easier to keep your history simple.
+
+ * Whenever you need to test or publish your changes to topic
+   branches, merge them into "next" branch.
+
+The script, being an example, hardcodes the publish branch name
+to be "next", but it is trivial to make it configurable via
+$GIT_DIR/config mechanism.
+
+With this workflow, you would want to know:
+
+(1) ... if a topic branch has ever been merged to "next".  Young
+    topic branches can have stupid mistakes you would rather
+    clean up before publishing, and things that have not been
+    merged into other branches can be easily rebased without
+    affecting other people.  But once it is published, you would
+    not want to rewind it.
+
+(2) ... if a topic branch has been fully merged to "master".
+    Then you can delete it.  More importantly, you should not
+    build on top of it -- other people may already want to
+    change things related to the topic as patches against your
+    "master", so if you need further changes, it is better to
+    fork the topic (perhaps with the same name) afresh from the
+    tip of "master".
+
+Let's look at this example:
+
+		   o---o---o---o---o---o---o---o---o---o "next"
+		  /       /           /           /
+		 /   a---a---b A     /           /
+		/   /               /           /
+	       /   /   c---c---c---c B         /
+	      /   /   /             \         /
+	     /   /   /   b---b C     \       /
+	    /   /   /   /             \     /
+    ---o---o---o---o---o---o---o---o---o---o---o "master"
+
+
+A, B and C are topic branches.
+
+ * A has one fix since it was merged up to "next".
+
+ * B has finished.  It has been fully merged up to "master" and "next",
+   and is ready to be deleted.
+
+ * C has not merged to "next" at all.
+
+We would want to allow C to be rebased, refuse A, and encourage
+B to be deleted.
+
+To compute (1):
+
+	git rev-list ^master ^topic next
+	git rev-list ^master        next
+
+	if these match, topic has not merged in next at all.
+
+To compute (2):
+
+	git rev-list master..topic
+
+	if this is empty, it is fully merged to "master".
+
+DOC_END
+#!/bin/sh
+#
+# An example hook script to make use of push options.
+# The example simply echoes all push options that start with 'echoback='
+# and rejects all pushes when the "reject" push option is used.
+#
+# To enable this hook, rename this file to "pre-receive".
+
+if test -n "$GIT_PUSH_OPTION_COUNT"
+then
+	i=0
+	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
+	do
+		eval "value=\$GIT_PUSH_OPTION_$i"
+		case "$value" in
+		echoback=*)
+			echo "echo from the pre-receive-hook: ${value#*=}" >&2
+			;;
+		reject)
+			exit 1
+		esac
+		i=$((i + 1))
+	done
+fi
+#!/bin/sh
+
+# An example hook script to update a checked-out tree on a git push.
+#
+# This hook is invoked by git-receive-pack(1) when it reacts to git
+# push and updates reference(s) in its repository, and when the push
+# tries to update the branch that is currently checked out and the
+# receive.denyCurrentBranch configuration variable is set to
+# updateInstead.
+#
+# By default, such a push is refused if the working tree and the index
+# of the remote repository has any difference from the currently
+# checked out commit; when both the working tree and the index match
+# the current commit, they are updated to match the newly pushed tip
+# of the branch. This hook is to be used to override the default
+# behaviour; however the code below reimplements the default behaviour
+# as a starting point for convenient modification.
+#
+# The hook receives the commit with which the tip of the current
+# branch is going to be updated:
+commit=$1
+
+# It can exit with a non-zero status to refuse the push (when it does
+# so, it must not modify the index or the working tree).
+die () {
+	echo >&2 "$*"
+	exit 1
+}
+
+# Or it can make any necessary changes to the working tree and to the
+# index to bring them to the desired state when the tip of the current
+# branch is updated to the new commit, and exit with a zero status.
+#
+# For example, the hook can simply run git read-tree -u -m HEAD "$1"
+# in order to emulate git fetch that is run in the reverse direction
+# with git push, as the two-tree form of git read-tree -u -m is
+# essentially the same as git switch or git checkout that switches
+# branches while keeping the local changes in the working tree that do
+# not interfere with the difference between the branches.
+
+# The below is a more-or-less exact translation to shell of the C code
+# for the default behaviour for git's push-to-checkout hook defined in
+# the push_to_deploy() function in builtin/receive-pack.c.
+#
+# Note that the hook will be executed from the repository directory,
+# not from the working tree, so if you want to perform operations on
+# the working tree, you will have to adapt your code accordingly, e.g.
+# by adding "cd .." or using relative paths.
+
+if ! git update-index -q --ignore-submodules --refresh
+then
+	die "Up-to-date check failed"
+fi
+
+if ! git diff-files --quiet --ignore-submodules --
+then
+	die "Working directory has unstaged changes"
+fi
+
+# This is a rough translation of:
+#
+#   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
+if git cat-file -e HEAD 2>/dev/null
+then
+	head=HEAD
+else
+	head=$(git hash-object -t tree --stdin </dev/null)
+fi
+
+if ! git diff-index --quiet --cached --ignore-submodules $head --
+then
+	die "Working directory has staged changes"
+fi
+
+if ! git read-tree -u -m "$commit"
+then
+	die "Could not update working tree to new HEAD"
+fi
+#!/bin/sh
+
+# An example hook script to validate a patch (and/or patch series) before
+# sending it via email.
+#
+# The hook should exit with non-zero status after issuing an appropriate
+# message if it wants to prevent the email(s) from being sent.
+#
+# To enable this hook, rename this file to "sendemail-validate".
+#
+# By default, it will only check that the patch(es) can be applied on top of
+# the default upstream branch without conflicts in a secondary worktree. After
+# validation (successful or not) of the last patch of a series, the worktree
+# will be deleted.
+#
+# The following config variables can be set to change the default remote and
+# remote ref that are used to apply the patches against:
+#
+#   sendemail.validateRemote (default: origin)
+#   sendemail.validateRemoteRef (default: HEAD)
+#
+# Replace the TODO placeholders with appropriate checks according to your
+# needs.
+
+validate_cover_letter () {
+	file="$1"
+	# TODO: Replace with appropriate checks (e.g. spell checking).
+	true
+}
+
+validate_patch () {
+	file="$1"
+	# Ensure that the patch applies without conflicts.
+	git am -3 "$file" || return
+	# TODO: Replace with appropriate checks for this patch
+	# (e.g. checkpatch.pl).
+	true
+}
+
+validate_series () {
+	# TODO: Replace with appropriate checks for the whole series
+	# (e.g. quick build, coding style checks, etc.).
+	true
+}
+
+# main -------------------------------------------------------------------------
+
+if test "$GIT_SENDEMAIL_FILE_COUNTER" = 1
+then
+	remote=$(git config --default origin --get sendemail.validateRemote) &&
+	ref=$(git config --default HEAD --get sendemail.validateRemoteRef) &&
+	worktree=$(mktemp --tmpdir -d sendemail-validate.XXXXXXX) &&
+	git worktree add -fd --checkout "$worktree" "refs/remotes/$remote/$ref" &&
+	git config --replace-all sendemail.validateWorktree "$worktree"
+else
+	worktree=$(git config --get sendemail.validateWorktree)
+fi || {
+	echo "sendemail-validate: error: failed to prepare worktree" >&2
+	exit 1
+}
+
+unset GIT_DIR GIT_WORK_TREE
+cd "$worktree" &&
+
+if grep -q "^diff --git " "$1"
+then
+	validate_patch "$1"
+else
+	validate_cover_letter "$1"
+fi &&
+
+if test "$GIT_SENDEMAIL_FILE_COUNTER" = "$GIT_SENDEMAIL_FILE_TOTAL"
+then
+	git config --unset-all sendemail.validateWorktree &&
+	trap 'git worktree remove -ff "$worktree"' EXIT &&
+	validate_series
+fi
+#!/bin/sh
+#
+# An example hook script to block unannotated tags from entering.
+# Called by "git receive-pack" with arguments: refname sha1-old sha1-new
+#
+# To enable this hook, rename this file to "update".
+#
+# Config
+# ------
+# hooks.allowunannotated
+#   This boolean sets whether unannotated tags will be allowed into the
+#   repository.  By default they won't be.
+# hooks.allowdeletetag
+#   This boolean sets whether deleting tags will be allowed in the
+#   repository.  By default they won't be.
+# hooks.allowmodifytag
+#   This boolean sets whether a tag may be modified after creation. By default
+#   it won't be.
+# hooks.allowdeletebranch
+#   This boolean sets whether deleting branches will be allowed in the
+#   repository.  By default they won't be.
+# hooks.denycreatebranch
+#   This boolean sets whether remotely creating branches will be denied
+#   in the repository.  By default this is allowed.
+#
+
+# --- Command line
+refname="$1"
+oldrev="$2"
+newrev="$3"
+
+# --- Safety check
+if [ -z "$GIT_DIR" ]; then
+	echo "Don't run this script from the command line." >&2
+	echo " (if you want, you could supply GIT_DIR then run" >&2
+	echo "  $0 <ref> <oldrev> <newrev>)" >&2
+	exit 1
+fi
+
+if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
+	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
+	exit 1
+fi
+
+# --- Config
+allowunannotated=$(git config --type=bool hooks.allowunannotated)
+allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
+denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
+allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
+allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
+
+# check for no description
+projectdesc=$(sed -e '1q' "$GIT_DIR/description")
+case "$projectdesc" in
+"Unnamed repository"* | "")
+	echo "*** Project description file hasn't been set" >&2
+	exit 1
+	;;
+esac
+
+# --- Check types
+# if $newrev is 0000...0000, it's a commit to delete a ref.
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+if [ "$newrev" = "$zero" ]; then
+	newrev_type=delete
+else
+	newrev_type=$(git cat-file -t $newrev)
+fi
+
+case "$refname","$newrev_type" in
+	refs/tags/*,commit)
+		# un-annotated tag
+		short_refname=${refname##refs/tags/}
+		if [ "$allowunannotated" != "true" ]; then
+			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
+			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,delete)
+		# delete tag
+		if [ "$allowdeletetag" != "true" ]; then
+			echo "*** Deleting a tag is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,tag)
+		# annotated tag
+		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
+		then
+			echo "*** Tag '$refname' already exists." >&2
+			echo "*** Modifying a tag is not allowed in this repository." >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,commit)
+		# branch
+		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
+			echo "*** Creating a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,delete)
+		# delete branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/remotes/*,commit)
+		# tracking branch
+		;;
+	refs/remotes/*,delete)
+		# delete tracking branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	*)
+		# Anything else (is there anything else?)
+		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
+		exit 1
+		;;
+esac
+
+# --- Finished
+exit 0
+DIRC      eÓ'ñ;‡©„eÓ'ñ;‡©„          ¤           ÌñÁìœ\’E|kE.ÏÁÓbcd 
+.gitignore        eÓOR„@ìeÓND,û‘Œ          ¤          1ïdoõ‰¬–uÅèPı‚*=Lc $Controller/postFeedbackController.go      eÓ'ñ;‡©„eÓ'ñ;‡©„          ¤          Ù¤Fª¹Ğ¬†%µ>=øÚfvÄX 	README.md eÓOR
+^ìeÓND;Št          ¤          ,«V^ªñBS‚mD(Øô¡EŸÿ˜-à $Repository/postFeedbackRepository.go      eÓOR±{eÓNEXÎ¤          ¤          ½Â( øG·h‘%ş;u1âRˆC–O Service/postFeedbackService.go    eÓOR‹DeÓND+ßˆ          ¤          k5{Z>27ÙK¦zWùÓne" ,circuitbreaker/postFeedbackCircuitBreaker.go      eÓORŸvğeÓND/é„¨          ¤          3ôj,å+8Kœ;ÒfAca² dto/postFeedbackDto.go    eÓORÁ€eÓND$kÅğ          ¤          İÙü¥_0¢ÈtKÌo>_ƒ$p× go.mod    eÓOR?·¬eÓND'ïÏP          ¤          ±µ;Î8Gé1ó$V^±¿„6ñ go.sum    eÓOR	“ğeÓND2ÇŠl          ¤          	ükI‹(K„ôX—”ÁWyW©k #logger/postFeedbackLoggerService.go       eÓOR‹XeÓND)Md          ¤          L,1m™$fø¥µ\»ÙIàµ£É\h main.go   eÓOR	`É,eÓND4ƒSh          ¤          ¯¼ğYd–ÀËFôáü¹}Ìg”…äê mmerror/postFeedbackAppError.go   eÓOR	`É,eÓND7Uµ          ¤          ejî¼Ç–0Ôä£ô\‡]+Êç¼ !mongoconnect/postFeedbackMongo.go eÓOR	`É,eÓND9=W          ¤          Åí8xkµ°¹MMUF¥&‹Ôƒ &openai/postFeedbackOpenAIConnection.go    TREE  F 14 9
+ı¡«-¡ÁŒÔµ»@Ï{ÄÑ=dto 1 0
+/Iı~ˆ€F ŠLgíB+Í¼šÃlogger 1 0
+ı0ŞÚ<ß¸ÃosªœfÄ Úopenai 1 0
+^É¹àÊ@Ğğ¸WâÄë¥‡àXService 1 0
+¡ĞàŸî¦íÀ<Ú*x¢h`«ÛBmmmerror 1 0
+¦”jìÓƒK	|äZ	Å‹ LController 1 0
+|UaÉ7ÂCL2ÓXÑí¥\„§Ö<vRepository 1 0
+»×$2cóó#w¦{ë¢”`øg’mongoconnect 1 0
+Œ„€Ík8ëÕ¬­B:¶Înucircuitbreaker 1 0
+ÊŸ²’ÄÚOuÜjİB WZg?¡‚RbBo€3¨9`>S2ÅÀ…@# git ls-files --others --exclude-from=.git/info/exclude
+# Lines that start with '#' are comments.
+# For a project mostly in C, the following would be a good set of
+# exclude patterns (uncomment them if you want to use them):
+# *.[oa]
+# *~
+0000000000000000000000000000000000000000 abf5d8d9393a96a55ab32dbe81c55881d6233d8f Sheshathri Munuswamy <Sheshathri.M@avasoft.com> 1708337137 +0530	clone: from https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f 40cada8be00824d7c48a96f02b89f1f347012eba sheshathri.m <sheshathri.m@avasoft.com> 1708347000 +0530	commit: commiting the post feedback
+40cada8be00824d7c48a96f02b89f1f347012eba abf5d8d9393a96a55ab32dbe81c55881d6233d8f sheshathri.m <sheshathri.m@avasoft.com> 1708347192 +0530	checkout: moving from master to local
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f 6ccb85a791e828d769e7a901c41ffb1f41f734df sheshathri.m <sheshathri.m@avasoft.com> 1708347245 +0530	commit: commiting the post feed back codes
+0000000000000000000000000000000000000000 abf5d8d9393a96a55ab32dbe81c55881d6233d8f sheshathri.m <sheshathri.m@avasoft.com> 1708347192 +0530	branch: Created from origin/local
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f 6ccb85a791e828d769e7a901c41ffb1f41f734df sheshathri.m <sheshathri.m@avasoft.com> 1708347245 +0530	commit: commiting the post feed back codes
+0000000000000000000000000000000000000000 abf5d8d9393a96a55ab32dbe81c55881d6233d8f Sheshathri Munuswamy <Sheshathri.M@avasoft.com> 1708337137 +0530	clone: from https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f 40cada8be00824d7c48a96f02b89f1f347012eba sheshathri.m <sheshathri.m@avasoft.com> 1708347000 +0530	commit: commiting the post feedback
+0000000000000000000000000000000000000000 abf5d8d9393a96a55ab32dbe81c55881d6233d8f Sheshathri Munuswamy <Sheshathri.M@avasoft.com> 1708337137 +0530	clone: from https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f 6ccb85a791e828d769e7a901c41ffb1f41f734df sheshathri.m <sheshathri.m@avasoft.com> 1708347252 +0530	update by push
+xuRMkÛ@íÕÿ‡\êƒ%úm ”4	©!m…zXI#këÕ˜ÙµšşúÎ®ì¤…ö ƒfß›yïÍT*x÷öÍ³XûÀÔÄ:Xò°˜ßİ\ÜœÂ•İ#8€ıA-<Pd˜~`
+¸Æ ¡³¢¿©şœ±^‹T%6 Î•ô×d`…õÍD~l·˜/æ'p…!X¿…M0°y”mƒY”Æ·lĞ¬ª¦ô>€Ñ¾½O=T’J±4z	Øêzš{­l¨Û©(†ÓÅüE1[{Ñ’›«ÈEó—ÅlCm#48 oĞ×õåU1»6% £C#©öº˜İ®µĞ"+.•’ÇÑº&+½SüÑâJÍ¶ÒôÕ‚æ?BúA•áO.“7H¥Ğí¥¾ç¤û²UxìyyØHêDŠçC„©Eƒ{t4¤D“ÿú‘œföf‡Óºs°•F<ÍYç;€Ñx]?ze=i 9=¨54K¤»@Óô­uz	ªÀOidñ-9Gc‚ŞoÓ~õ(ßŸw!rZ–ÕRô¶f¼¨©/Ñ¯¢”æWd,U?R2$åÖ†2Æ•YM3?ì-ï3v5a—|;lÛ8!½[ÜéË`yZsËÔge•&3ş¥]b÷g›ÛâËå&Íø$T‡w±ÊCù‰z\fÆW+Ñ8=çØXR^óoŞç£Ír/)ñ‰|Ş™›ÿO{bMÈ$kù
+iY‘x+)JMU0±4c040031QĞKÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJN11 çü¼’¢üœœÔ"†šĞÄ“æ‡œ}Œ.G\|»4¦eù5›2¨QA®.¾®z¹)<KÜVí¼0oM›êV;Û·Ò$ËD@L
+J-È/Î,É/ªdØ}]Å(ùógåòeÕ¯MaJø‘>‰¢(8µ¨,39•aá…óß-{Ë|Àæ–VÅ¢Œ„Õ·r!*’3‹’K3K’ŠR³:5Ó¤#·üûKïdİuZ ^•ÎQ˜R’Ï ïù·®ƒµÁM¡Ë'ı­“öÙ=³¤Cœ¯—›ŸÂpóÏÒxƒEò'J¼ÏäÛÅOhVá-¸PQ\šË°ÕšåÜn÷—†ŸUÂâä6îo1û±!'?=è„¿÷nÙÜßq˜;¿xÕœ4Qñ#·Ä¡Fä&fæé¥ç3èæÎTIû±tkÌî›˜¶.>“1#77µ¨(¿ˆaÙÑ¬7—›e½Å8kDqíæWğªÈÏKÏOÎÏËKM.aèian8+”mñúªÈšµNVÛøÏå•B”å¤æ%f24ÆÜ)ıà”Ã…;Â…y½´ıA ºËşx]QËnÂ0ì5ş
+ËäHUBH©‡¶õPZıÇY«9NBü{×pÄÑ;ÏìÚt6ŸßµB~‰
+h#”!D5­ur’0>¯½oI¤5ŞY­ÁQÖÚÎ¯ ÊuùË@–Ä”·îï†µ½ÈêÀ}+	7”İyŠøÚšÊ¢¯éoHM€0K€Áˆ•òu_dÒ6yeÒZäMÿËHJÈ¾7òÔ‰§ô@’¥ğ¢ĞÅ#ÿËçÃ‘$1f`Å6Ù;ü\GŸ\<S’ñƒnè7(ŸD5jâî‚k++#‡Oì–8Û{¼Ê°nàoO®g({¦Ô°Â%p–‡“í‡“±{M³Íè˜i¶_Û²ãló±ûdhÎŸ½©Îƒy2e œi+…®Q¸˜M§èwş2%GòÌíÎ³x+)JMU01c040031Q(È/.qKMMIJLÎv)É×KÏgø’¥ó´Q–M›ÏÂ{õ%Ş4ÇäÄM Ô?"x­TMo1åºşÃªİ(q
+*BDê!)DôP¨‚³ã$†­½ØN£*ÊgœõfÓ4"qZïx>Ş¼yãii¦ğêâİÛ•?ÅAí­)K´Œ©»ÊXKRÔÒJÏû?œÑ)fw>|4úşÂûŠÎí½’ieœ#SJÙŸÔÖàûÈ^x“²œ1ÿP!ÜîE\í €óv)=¬ÛÜ±oFT"V¸f›ƒlá²ÍvJ{´3A)c“!€ÌVzà_ĞUF;ünyvÁB'Ú-Ñùœ%Û›ÆíT˜óÂ/İ•)0”ìB!¼h‹¯7y@:[j	ŸpÕÕÍ"ÿÔl~Š3jÍ¢_Z}Âa³ 6;4™„Î>--¤ÇÕNõ}HW ù^X˜E- Íœ8ŞrÉX”Ä‰÷HÒB›Y>2ÅCÎëÿì¬	#‘$h-.·	¾‰R£˜µ÷‰šAğxy	Z•¡l"ùÁ¨ºpq~Ş…³C=çõd7©¤tŸv¡6İ s´d‰"æ”&—DvYB3¤³[–4áOòÃ‘mÕõ¿¾9
+t,T‰x×$aZ[¿@GêùSì´ÀüÖ’@KÕ}PwGh{hká’TN)å€÷ã›õ×¡!²dÅ?¢ÒÈù°(²4µï}¥7ƒF•Šª*•^]¿KÔÁ^Ì}–¥¤Yö¢–{Ã²4«Şg«æJ‡ô¹17è¦pÿTãß=…÷¼–¶œF.ZêÂb4Kô!¼ÏÄÔ*çõ1¯Nxi~/©ıÛx¥1nÃ0E;ûÜ¢%Å4¹
+)R•Q8
+l6ç‡Ù»|à½áá—¾®‹Ã˜Ó—of€µ*#ËxlA*šÈ$‹¤Pê$%)Fˆ4<x³»KÍJ:Ç9ò|áœYâ¨b„%g"ÔË£RøÏ[ß`o¶7ö¶-ç®Ÿtã'ï½ú¹ôõp
+ÓB€SÈ1‡=ºı#ñn,÷ğfğè»C5Sáò;¼ ;»T$x­TQoÓ@æµ÷+¼H ´dÉÆ&*M‚®€öPØ&“œ›’»èré:MıïØwIW¶‰†T©9ßù³ıù³³Jgpx|ôîE“æ?Óa¡U¡OµR˜[!ÊºÑÆB(FA®•ÅµÄh±øhní'D™‘gR×hŒ6tØ²Æ@ĞG¡ãšÑdkS$î{_šr…Æøõ“İØR«6c!ìMÓ§8ŸQ>f™æåöëVŒ>£ıĞ4§U‰Ê†c'.n<Omš¥-F0qùÇôˆÊĞfì\.[4½ì_BkM©Š¿‚Ø±ìT_ğÚHİÿ|”’AÛ5Xn7‚ïVÂ‘ºÜÒ…G	eFY2uóÙş¹ ÙbNQ[˜@öÜŸBª5wÄD@íâKê5–›}¡}æ½gÜÇ¿üvÁ`#Î	ª\:”½PeÅA‡BéèˆÑf[¼»mCødÄ@LãòÏëÑÿgeÊs©Øâü©ş{]ê4çN¥(dëeıP÷LˆïÊW?a¬‡~ØbïyLªAx?"kÉ®#ÈS•cÅ¾ô‚7Dü½´W´tgÙËÙf´$
+£;%Ãq‡Ş1éR+IH—hz¨GTZó,Ä§^¨¡ëtÜgşdüÈÓt^*\7¤v”nøCƒØ	ä¾\oÈî Á„rwF,&	œÕM…5­°We,`ŞZ`5Ï·k‹iâyã[âR%I.óÔÙ†•Cü‚!é÷£k-¤ĞT´ô®t%‰2öV´„[”!t·®©	æ¶K+ -î“s³_H¯úxtïÆ}
+8Âeöº5«i’H\L)ÜtÑU¸(ã€^¾=8|s´·÷¾&k=X÷éu¼Rm}\Ûı¯Ğ&ADav6È‚ºç3¾¿[½~5²Vï2„^ãbn°mÄ/áßMux½WQoÛFŞ«ô+XaäÔ“dÅ0ØÍ N‚&}*U>¡’N;Ò©ÿûÈ»“,ÙN›nÀò;GòH~$?^–™XÂÉoG¿ÿ4Áÿ»æã \W¼1wÆG£“£ÑñøøWOÇp½pËˆ}ŠVX*Yª¥äÑ'.]7ÍK!ø®ã1Q(şEyøU¥9÷\×Y,ŞŠÕŠKğJQ©sÎã%Ş3Êô!*.¯å¶0Ï¹”BÒ5=£\+1EÁú@éJú,^B®Fúû/±Lï¹-+QĞßÒÑ;p]õPr˜™ÌÎLfs®¢4ƒJÉš)xt‹9tP+:ùH¾&^˜ÆC‘§Šç¥zğ>ºÎéõÅe”óÆhÇ *Ó°@ÒÕRòBİ¨H‘Á.3ò°"28ÇàjÉg¢.¤ú7¹²Ñ$F2R ƒ›š1^UOTF¾1¸ÄR*İKnñWã¡@yí€B#L"/wõuè!]CYä¥N±V<>{ ûÒ6òp©™¿®
+£½³ÚXyLømT©…ˆÓ$Õv ÍPæVÁzèÚ ›}ãç¢:e
+{Îµ[‰´
+#­€A­]÷>’`Ú›éÌhYlún_3îíÓN‡²,Å‚EgNıÇüì'S&ãÎi¥'v–‰ŠÇ6pú˜‚gÎptŞDYrUr¶6g(î‰¬-¡È¶ÚíäÕÈb¼ö¤íØşi3{ïˆˆ0(¬ÛãÚLä;^•+ßï›Ô67ÂŞdIóúúgµâ~Åå}Ê¸EÓCÖİ¡õ; ¿gCª²RpZ–ø!ä€0Kê‚Á%ÿÜ¯‹ÿÈpØ·¢èlL¡í¼Ü´?pÉU-8è>w0Ÿë¦Ÿ˜È2$ÅTp¨I-˜µ'6tŸ-·ÃÀD@Iú-ˆk„¥ó×pƒ/Š†ğ-`;fÛ—l£KhÄË! éÃd
+l˜ì‚?¹ÂÌtS&i¢u^L¡@bF+bpQ$Â÷Ş#!•ˆ6´.›§¯D»L´ÒG®ƒõt:˜¡W\!È|¯»‡]êÄ<Á5Fz6 `V8I´|»ù‚Û«ù•? õ$Í°)!ÚÁâÑké~ÒEBIÒ"Æuömİ‚s<½*x{÷.Î•D:}ßÜ?æœ6¶`hã_¡dİ5Š¾˜ìÎÀFs×n³'ê,nö¦¯9ôR|öÁi‚ø&Ò ³^Ğ#±"²…™öNó¸TukÑÛ‘Ó)Xöúúš;·5º‚ƒè6ĞíÓ8BHØÛ~ö-9LH-¯—gÌ©1ıàá¶³ï/ÀŞ|5ëËlä÷eŒë­ßL¤ß#¥¡Íü5­Ú\?¤VÇó5ğiz‘&A÷ğò%	6HueğœÃÆ²i“y#î‰{S>ÒÁ;ÿ)1=ƒˆÌ›¨ˆ3nãìRôv™AÏ„MšıD¦:*õ‹^­m©5Ÿ>Ç½-èBAZék‘4kX^î×§Y{9öY=`|M+ì}ŠRÏW<—WœZw_—‚~®¸ò&-#±Ş£r²oÎÖˆ{¸áæ;™´¾ÇOC0A zX6÷cìİá$½ìôŞ3.‹ïÌ™Åx`?©-~ L"(3y+ô}ÍõHº%ˆD²Y-ÿ‰£ëXíby¶ï™½H>9šm“æøı+h^Sø¼é¿—Y;'Oî{=­şÛâxVÛnÛFí+ùSÈ˜^É®j•‡4vjT¾Àv›Õ0(i%³Yr…åJnaèß{fwuµ	Œš=3sæÆ¡ÒC:éüĞùnVŒ¾SI}=JÇe5ÓÆRGÉ¤²	JOù¡şßÈ‰’#'o¬ézÁR¼–õÔ)Ø²’IÙ´´ó¡éªõ—~Ô­©k+Y?‹ãÉ¼Qªè­7›Œ¤J.¤"Húü’³ìB6ûWÖVšI1’ÏËœ
+3mH±%Ìè9Ê	yˆ¤„ƒ42ÒÎMGË8Z†ª é}£æ©´£Gª¨ÛÛ²(RûÏL:ØQÑHòÚ]À­î÷üˆÛ"·“´ònÁ«,Üwêx‘f÷^%n<…êXNŠ¹²¬°`¿âBÍåp¡Ã-Äoe=N3êmt€2Y—Ù0xÙˆóR‘MÅSZ,&Ï	Fm¨d{íŸğüğ—óê¬”
+& 9<ô¨l¹¤Ô?÷ÑròpÌ-£‚³@È›!š.,’øw 3Í„·Qfâ²¨$ËWç–ƒÙóxéMlhnÑ-I*¤Çq°QÙÎLrpÈ8"¿UÑ|½•uSÚr!¿h3nÒp‡\AÕkˆ¨Š¿/|ıôe=µÎğ/¼ºûz÷tH	PÑ„ÔW•ß£oà·Kc‹jÆÉàâR?1OÚT…M““öIç¨}rtò#¿ë¶;İö;æ@®IøÖ Ewïëó99¿<»B´É§Ó¿æ—Ó››«›d9pıpïn†Î*Ë×w¸ºƒ·ìN—Íıº7?Ãeäµù³†u ®_S ÛsGıš[$İt3gñò•!p^OtŠÒDäÿ¯ãÑæ˜sNşŞV._N™Or8Ÿ~ƒÇæ«&^Ú85F›o°áõºV«Ç˜µ}Y€=:n·ÛqÌãj.fï}gu³œ)Úœö¨Ô¶ˆ#V9Ë<•WX<JÂpñ“”Ü¿~¨»8zâ^¹Óè„ò['õR>A0XaÄs§Hc¸âV›@ôuyãúŒ¾ïQ]*×RH«8+l¡R@Âb2ê‘nÄgÉÛ$M`èÁ•]è‹óÚæôÀv/(q]˜FBÌ%ˆë9Ëé}°ÓGØ[ÄŠĞ‡B«åW
+Ğ szë±°Ãnâ3É<È×=b–¡;vlïû—‡=Ÿ›=±Ïälg¾®òœü*•Ò<0ÛÔ˜_®UQÿ¢›àš_ô¦ï’ÅCÔ…ØõÉ^‡œã`ËB—¶~à­üZ7ßJëò²·×İN]ígĞÊ»ïs¿ø,øïñv]œV–ã0 ¸ ÂÂÂº{ÈÛ,7Eo
+%¶ÂpU·à
+ˆ?kÄœ)|{¤;ç.ö’ä‰ı$+Y§e9ûú\ï` îX«ù	x¥»nÃ0E;û+¸D=lŠş
+%R‘Q8
+,¶ßºg¹À9ÃÁ-}ß7?ã‡ª€µ
+#gnA*IsÊ9ºR—\¢`‡HÓ“}p®IHÖ°^gN‰sğ’•°¤D„2û„êÄ?Öú£éhlíØ®;ÜşÓÿòèÕ®¥ïŸ€‹£\\
+n:íyÔôÄ_c{ÜÁšÂ³ƒª*¹|Cé¢cz–,V†x+)JMU05f040031Q(È/.qKMMIJLÎvÎÏ+)ÊÏÉI-ÒKÏg0|Ÿ’ÿµsÍ´Ò£/ş6iõ2Ûú$ ŒÅx+)JMU0µd040031Q(È/.qKMMIJLÎö/HÍsôtÎÏËKM.ÉÌÏÓKÏg8úÖ¢"{ë†¾2¾¼sCİ–ªu_i Öx+)JMU0±`040031Q(È/.qKMMIJLÎöÍÏKÏ×KÏgHÍz·çø4ƒ+OØ‰iÕæ?õ| #x+)JMU07e040031QĞKÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJNª
+rutñuÕËMaàYâ¶jç…ykÚT·ÚÙş¸•&Yv$ È.—x+)JMU05`040031Q(È/.qKMMIJLÎN-*ËLNÕKÏg8¤¡ğƒÙ}{ÆDÕÖ¥†‚:œ§ù 0/	x+)JMU05d040031Q(È/.qKMMIJLÎv,(p-*Ê/ÒKÏgØó!2eÚÓn_şÙÉ\{&}Jë“W mctx½WYoã6î«õ+X¡XÈ+o²Z¸ÈCb7[£Èd·}tŒ¶2©¥¨¬SÃÿ½3$uØ±s ›æ!’9gæ›Kq!cöáçŸ~ù®Œ’¢˜‚RV\Kõày|QJ¥YàüD
+Kíãk¶0dÓg iŒ‚ãTK$Ÿÿ¦ó7(‹(%Q¥ÈåT
+‰Şf"^A$ºBóø¾ä\ßÕq˜ÈÅ8—Aíÿû£q!sâÍe¸ ñ4¥ÊÇæıÇTñ{ä+)¬g˜Æ¥â®Qè9•F¿ï=O?”À®zQ¸nCÇ*­jôrå’‚ƒĞ¬ï|h~ÌNçR•E	xë=ÚæŒ7<¤k.*PmĞ_j¨4Ãà‡×ö}È‚û³*%rØ%<)KÄFª!İ•Õ"ağµ¯3<Hã§MîóÍS k%ö0¬l &,×­b»#8dßÂYš7@×gñˆ™åçä˜©ĞZ~çSƒQ0ô<ëø¾?f‚÷¦ZhÂøæÁrĞš‹œ˜DšKÁ¬¿»	õ51AEİ¹7@™«©,
+L{Ò€–+Ãî,ğ¯”üéV>j­1f #^tŒ»…?·œ$‡õ	ş¯1×Êï–º|Ä‡Ò˜Êz9b·$âºAø–ç'¬UYë 9;Å~+Y‹4Ø‡÷TÌá =%-dü-OG”:"emé…—1y:Ÿ)¹ø–M‚‡äÅ…	#õ4bÙ½­ÌùÏ–%Ş©A2ğ3#¤LK–¢)0}ŒŒd<eZÂî`IÑ#ĞJ^BÁİ¦„Wî„Òdµú&Ìÿaéä-ù3*j˜0jCáŒ8ğˆÜÃ—ä‚µ^¯G(íí5¥MıñE}È7.=ìi$Ï’ZUR™à‘stñvŠ…'y® 4ì»‰Ál¡bÏ"õr Î,P\°0¼T~UßÃ2"¤‘â¨‚»2ÕúNYívƒŒ¿”Mê¥”}6•7Ø¥D/Ñ‰L¶º/pPX,CÓ;Ü…3“\Á;
+,ùL-e.2ø†0i•B$ q!¤z3àP
+†¿R~¿A\w@jzLÕ°—ı¹ö[Ñí|öf…Ğf?›nE„kH[ÅOUÌñFÚly“ryEcsõ‚¸šzy\,[ğRÒ£ûfÀ°»”G¥›?5é<ÁĞZÒ+’İífîïéë½wµÓ{=Ï.µm'}å\r£yßhz™­;çëìm?ë \¿Ã+…{a!ÿÓvt)‹¾n”Îf256´šñE­mk· 	Õø4›0÷çl¡ØttRè8ÜÚ(#
+1RÛœwZPµ6§å²‡…UµËbRÓì=×¸µˆœ®lîÛ¤ôy§¿:„Fæm^G!æ©œdé)l÷×³Ï/EK4[Ì…üŠK
+ŸË”g¼/İnˆô¦ğ¼:Á}ï¾‰Ş~ˆ:©níü=ÆŠµVİ~‡ÃÃ§/Åî©5BW´»gïËR±+n.3-ƒ¾æZ{è{Dšãíéênx×ÿúXİèH×Õ·*ÜŠŞbÅÛ£s¨*üÚÄÓ›:Á÷¬.Š·òÓ2†iİÀúë-âøÑğnVÚXx­Ñ
+‚0†»ö)ÎeQˆ:×"’."ßàl;êÈ9˜ÓçÏèú/¿>~å¬5²\ì‚'‚’&©`©’Œ‹”•Î™Lsyæ™(Pñ“.apZ3(á¹XôĞà4ù™Æ-\~îıUqsÃg×…X9{…T$[<<ƒc²-Úèö#ĞÿŠQ¥5ihëêşªc«O÷&˜~r`ÿpèÌHsô_BQ~x­XÉ’«È’íuEí1%c0´Y/ ‰A!´cçIğõ™Uİ(ëŞ[õ^—I&KËÅ9ÇÃİ{„öo$ ¨ÿ¢6ìì§È`×ê='á Ø4¥7üÖ£óç·ı¯>fb¸Cí*ï9Á?=lÓ3«VÕÉÁ4Q<6Mg(ç¿ÿó/g‚¬pàeÒ¦c`J6Av/à¬ÇSvHá&9+D$â[s„pÀé7àYb™ZcP]îÂiáX©×üÖ#(ñ¥X0¬+<4C¥¾(i=&J!|ïBŸß‰=\<šTˆOìß^	_u%İûZ$¤µv¹ÃÎy‚•Î`Z¤‰s£Ú£Mjş¿Ë£Ş«+İ´µ•7©ÕõgôW['ÏçĞìGÃæ¦cöè¡’=å¦ÈÜ
+—®»nâlŞöo»—eÒËKLH?‰J÷`Œƒjåp;`w9å}ŒÖcŒØr%B?wšş+²ŞJ#÷+æG?(Êçâ*­6²SoÉ¹ÎR˜pŠ@È+ŠôÂ½+ğ%!G-„ïøt¡VÃ=PšÃ¯RókUXc-$×Gê¡K$#›˜­Ö¬ouÂÇë¾¿Ó'!
+¾eÊl¯†¿~{ì·û Ø²„pƒªGD|	úª"øú–©Â>Úí–Úv$tİIİñ`°.ü-Ì•\Q8óÃÇ™ãÒ€Óañ€
+e‡ç6ğvX¡‘q}ıZy 7¹U–ãRCs/,R¯AÍÔ¢Au¼Ôö-»zßì-úïGî¼o;«‘¡/±ñ—x+™ğãeû™ĞéËóE™:>8Üß*)LÙªãP˜Å©“`ÔÙû.³RoÚ8Y¹ÈØ"óy=âİZgmÇ3QàŒ\®°nT¢EgÌ%p¾X;ù›Ì?ã­dö´«¹’-ï±äèÀı©O!Ÿwsíäaƒ@ÆÊöõ=QŸ°]¹‹‚¯´£%I%æà¶ØF	Ù^¢ÊöÌ=/`é	sŒD{BŞ¨ÿHä
+m%Q;—§GÈAÕûÉow+û})°T=ë¬AyøÒ¡ñP|­£4µà¬{-w­ÛJÓ>† Ş™FXÕJPëŠ`2XG£·KØQæNW!2¾7ñw´•DVô™#Á
+ÕEËä±ud¥è8’¼ãÛöIT<ğ3ãÉïÉ‹°˜aÜ¢õòşë?k’ò$	†ê^2‘Ôü½ì]›êe±‚óÍ^¿OR5 
+òòğV2}Bâkp/*$Â<X<¯œ›&ŞÚäi‘|.¬]Õ{©'©Õ5eÑ´ğbTµ×Ì“d|ÔWÒÕÜ.	‘b‡ïîİ¡u7`‰JézfySÑ.-OóyWï•ùsÔ•ä¼µ-Ç»Z§F¨'ø2¾$_²-»O„k“\'aäaøè½×gênä.‡»éê|‘K|©54æ0Ìm/p„»GŠ_i
+ûşCÌÔ¸r³ã{ª~¸j÷/’ï/IÜ‚Ä.:A|?ÕUœql_oJ|ÛÓİëø–²¬È[+·ütÌs¸i­ösJÏî´Á”BçÁœÙ ¶Ï¸¶ãÒı9%¢ºã_N1ômùÉ4Hã˜şóJ0y»HäÄÑ,'cÅQz¯‘‹pè Ñ×S§ÉŠÎ›ácH2ÿœt¤¹%Ğç´3<ÆS·c¢¿¯:ó<­¹í±õìÎ÷½º,ŠtÉÌìâpûŠ#†š°ÍìöÄ9bä¯¨‡ù"Å4¬aw÷2¼à/WÂI{ëÈl=Œ' ÂlÆ%FÆ-E%wcäNä¡<wBNM×¼¹Á&(àÒN\rÿ«÷ÖQü¥#èá!n7”Ì){h"v¡3
+İÜ´wB»B¶È_ã­dÆuÙ±E ¹‚¸y}@hIÌğËAeûrölmP+G*ï½Òï2§¶²Ïöüš»ÃÁ–ˆˆPTïê–Û©¯
+®ªSÆÃmwò!]oï~÷¸•HUƒaÒlŒbq"­Ÿ_¤J™õ(#ÑU0ùœqx"JÊ»“üÚÖQÌN2O¸å<‰Ï	'a%ÀÏ(ÛNRl\32<ïARaV5ç…9µÅ“tŞWİŸa®äf—}×Ía¢¸LÅl‰‰½}­ºÖ¸¡Ó#‚(®PW÷É»EE—Yu—‰ÓĞ_;Ãg_Ò(ŠR†£82÷¥‡y¸ A~nìÍ¼wç/ó˜ü+“¯Òİ	¬yNèh¼Ê»Šì¤ñ}{ûW¹VáÕ‡áäÔ©K/PçöÍa8÷=jîÙy—bdÀŸn•}£ì¢|†Iİ%È%óİ _á’£.H@^^Şoyš]ï¼‚±fó©-˜×ZKhan©åÎ’ÏÃÌş(ê şü{ãÖËşşY¿ûï…¡ÚL56=üÁÇ¯Ğ<YV$ø@¦´É‹XªK/¶õ×˜+¹÷ÉFä9Yå‘1Ğ@%v°—»:‡wˆÎÄ{GÑIOH°4d±¬ƒŸR_°Se[¬Ì 8BcØlÀôÆÁh÷Ôe,lÅæÆJà5
+s`¹$@#ÉN:J½êÉŞ «Òmš#-võ+6EE@jƒĞŒí[€¤ Ê¬Øö}oUu¯ºÃE£»=X>o°/Y‚ËıáiË½X©O ÍËáOÙşØ5m«JlHø¾	/$.¤–ıdÔOv¸Üæœiû'Ü…2‘ük%/àXÖ—¥`8ŸÔR‹¯ØÄq-vvn¾)kŞó~SÛkzá(ås³XÆrÏ·\rx®×Ï^0;!Pfn/§74é Ôs1Ò¶‰a|”H7ÃeĞ»B¸qùL"ù>ÌÿsFß;õÓº/´&Ì½ö-Ñä2_ç/µÁm„ QÏsh°>ú	pê]Ó´Œ=‘¥M’´×!Ä/gDJº³0Ø·'£›_QÍYÆ0r¶„`6J{m# E‘UT"—
+;L¾t~rR¦Gxz
+èÀĞÔêi1êöØ”’2w¹Šı4ªù gwš
+Ã©…ÚÅhw.0{EõPÃ³Í}BG17¤.€æ7€·½gê¿„hIRùÄ|/¨fÌ·$æLaÎ^ˆ.Y›sç zÅ¥¾äÀÀıôš:ÀñI@çÅe|OÏMõ–BN…?_Šû]‡õÎõq°¡éyïap
+õŞ
+ãÿÏ5¤eMWhûÃ$„¾oÛs8×:õ8ºâÓÆg¼•;­D±åÚñ#Ñ3Ğ?të™÷#€3—‘‹Ø(j»–åĞÖŠê¦]h¾çGgŞmMk lÂ6‰o@`Z>6
+§_ÜØ‰öá§o¯Œ°WTóî‰¢Ì\¶4Jm|š°)†ñ\§6Dg'q<æ¡Jû«ĞÔPŠ
+ï¾UR.½w;Ixº¼bß›ã
+EH 8@PrC’À£
+')]EU\’°DåSR¹î•ÜÖI ”±“fNµÍ–ŠXš»çÚ÷æx§Â0GæÙml›»İr-Yà?Gõ{jC;Œ?—,eàÿ#Qµ^=/zË;Æ²“,Éšíeq3lC¹ã0ˆÇ¸o'hÇÔÍçÔvËİfšœXÛ)B+^ÌÈ^€+:ÊŠíì{IãZÖFèÁ}Ç'g6œu¶b›GÅF Ò´wW¿{dpf^Îg¹NÑƒ{¨Ê¹·——¿lsëöi½×§Cãoí£T2-èg%ò89á~%Pé’›aãr8´Ô8vÃy¹·ıo½Û€gáÀWµïÆt_¶r_&¾Ü‘Q}f&†~ñW4İ>ú9µÊcaLNQh}•_@0#ß™H™;§`•<ZÄùÓÏñÖ%ĞœÕQÇOÇí™šŸêôÂ+ÒÅ®$ğ¯´ñ3¼ù¥÷ë-ÎyÌHfá×J£‹ˆ„¦èB¹Ú½a+éˆ}„é!?tAZ…ŠÒÏóõ(–&­œî•™4â¡ÕÜG jwj¼p%jŠ9İ–W·TÌ7¾•Á 4Â,{ôl2Ø†A|‹¤1³ÈåùëğœR¸Îu¶p.L¯û>“lŞ0AéšTmŸd<š½Ld:‡odÌâfØ<¨æá1´86JÓèšÌ†0¸ìr¯}<‡6’:[my˜“1E› ®á>¬ğ§ùƒl~Yo‰¡²?ô¼N(R)«Àç[e€«è!÷ó˜Í÷…?ím/¯®‹z}ZB-)˜‡ìÆbhàâBYÖº
+0˜H†nrF´hÍ;9Œ,Ö…®ûÕvkuF|­¤v¾ø™ù¹]¯œÿtóËÃ¼‡! '7Œíú–=[? ğe8
+T 1û£V!TXúµÚ‘äñÎ{/ÙJü`ôÄ¸ÇÖˆÄúûúõ÷yVEğ/…õ?*Ÿ8x+)JMU05f040031Q(È/.qKMMIJLÎJò2Kò‹*õÒóV‡Å­úèÜ”ë¢qãËB×ùÿgè>  ‡vx½‘1OÃ0…Yã_ae@	ªŠÄÙBC:Pu¯­¡9ûÔÿœTŠX‚Kç{÷½w.÷ºä×7WgFT/b¼(î¬eLÕF[â	‹bºÜ™˜¥ŒÑÁ ÏñMÚrG¶©ˆ±h¡%pR{mÆ,éZÔ†ñ†E8×"¼Já¶ï©ª¾áÈØSƒON„”ç.È’”_`O´@E~Ş×|©'dæA5cÑq¼„÷¥^h$@ê$,ı…”~~—=kS·[š¯HPãÎØÀáÃ@E 'vğàcZûØ7°lìåVÈGxmÀM½hl!ohçCU‚”Æ‰W²FáqÚªO¿i_şÃÇ½¶¥’0˜ø¤Ä,XxRÍNƒ@öÊ>ÅÈ	ÁÄƒ&MzP£	‡SãP±ì®³‹Ú¾»ÃòSÚ4¼í03ßß°ÙªÜÜ^_è,ÿÈŞÒW•£U­Y„G¨•©¬¢øü²OˆÅ†Ç¯ÖSÃŞq«°Š¿­VD'KuDŠ|
+awáeùÚ³ƒ±ÔäÚ
+’ùtÇŸŠı	Î=KpR¨¤E*³;¬ùn@øÙ ±ÀJ“uÿ!ˆúÒh%Æ9ÉÖlDQØ‘•Ìá¿Ç.ÔêO¥áY«Î£mHë¶èÂ¡î'îÀ@4·28†ÿŸ?h=!¼r8p|*X,Á$$åLh:ÿÈ
+¯*İäådµí’æÆYâ2†>CNìMâÆÜbáÒü‡†Œ"p•Ï8œî¸yĞÀlıWšì„xÅUMSÛ0í5şªŒMƒÜ`&‡Ò6S(!‡Å^'*¤ÊrJÊô¿wWr‚C¯msŠ¼Ú·û6³JÏØÉÙÙé#òG1vc@ÇQ$—F[Ç’¨ÏÖê r]H5Ï¾ÕZyƒµÚú+©3©'+2+pÙÂ9ƒçëë+=Ÿƒe±Ñµû PÌ°PVy£¿¿´¯/—K ¼q”FÑJX†Îìp“ˆ‡|QäÖØh!Ü|o v¬v¶É{z¢~í8×F«v¼_L]÷0‰Öñy“Ä[åX9°¥ÈÉí	…ŒIŞwØÁš²¤ı}êÁ‡Æà¶).•³/ğ# IÒ–êĞ‚k¬jˆ½slË±áíøáóåW6`ñZ7öAùğë¸s=½»¢k"¨>Ï2ôàI’çz™­N2Ps© Î
+±’*—GH:<exi*pËÄ-¶ä0@KÙßkœº#ÂlË8 ¤Ô¹gûBë>C°ó#9òkaë…¨º3ç­0L–Şùí€)YQ*ÂÇªÔIìÉT¢b°+”ªg öÙ¹?')fØÌãûˆ/8›*x2;(‚' ù%i!À[ 4sŠjq%ñíÍä+kHKŸù§FMY‚M:İ†½vÁ?(Àò	¸$iÔ½rG÷ø
+±XSÉ\<ÂvTíÄ·ĞVşô^tÂÒjx×ªß{/¯$æ%Vü´Fş%ƒ¬Ív’Á¿×4¢=N¦W òÄ'MòQ¥k@¡z²¼yâ„kê>"†ò;=>ş·òÃ…LJb9ÈLiuDe	ß}¥ÕËÍ2¡­Dú‹ÓWºu_XØíøD1¬*œyÛî'õè¿!lØ¶¯°aÃGÔÃ§ˆ[Äï†©Z¶Û!tuĞÃ®BÈÿmfËS)d…,9ÍšÌªïÔ´Û§‹>-6üø™ï•³x+)JMU05g040031Q(È/.qKMMIJLÎvÎ,J.Í,q*JMÌN-ÒKÏgÈ6­²32¿é½¬*\ìçå<¹T%V Á:›xRKœ0Í6œ‚åŒ"0vwOÃrÿğ8±jn?…;B%„àÕûU	¢ìÚîÛjvºœ ¦ŸZ+ÁåPJZ3ZÓ¢ú÷lƒ.ßŠïÆ¦ÏYÔFb Xç8çG¹ĞºEäş÷/øÄ(HÚ/à–Pàñ³¨!’ß+ì¢Ã†¡×º)ŞÏ«ÉñÕ˜½"$w:–K³Ñ’Òz…>eúËˆıÔì7­È]•÷Ññ¨Œèÿ”ÂiPVmqª9øÍ(ú<E/Ü­‹kÒbî{& ·M5‡©ÿLŠ„V=või~X˜x²ÂéCØŞ
+Èó¹°raõa©ûÕpÜ=Ÿ¦uñOÓÏq;²I±q\ÔıeÏ[MÜóŞ­Ş“˜xÊKB™Š5ôNñÁÖ\ºŠŠ¾SBªV
+}jà¡Le€LbP=æymq/ıeàcöY³Ç¬7˜lz’_OV˜G22¶ÏŞr¤–RzgìB/FÒL_ôívıP¢Üz>û‘aäÃ{mrŒ«—öÒ÷•ô#eÔñ.ß‹/ÿÀDx-Œ±
+Â@D­óv¢‚v¶¢… ØøŞ%›daÍ†»=c¿İ;´™˜Çó¢»Ã~±Ä‘˜"ZƒvÁ=#ÜĞ`”Ôñ«Õ–ŞôËO®F$gÔ2ga_UKÜ)|1ÍkøÄÒ`bëñèV¾MıÈ|™¿%“A[XOÈL­/
+®#˜ª¬Gª¹åÚ‰Ì˜z"ı•W6ºœÎÙ¦Éª/§£Bx•MsÓ0†¹Ú¿Bø”0Ô‡–é¡0ÓCZ¦®l)F%–„$—	Lÿ;+Y²å$zèD«Õ³¯¼z¥r#Jtüêää™ÄÕw\SDŒHSÖH¡š¥ÉrùA)”I¡ÍGJI	Y‹¦¡J	•¥IfXC³~ÔÌ|kË¼Í¢Grƒ·µ-'‹G¼a›.½y#x-H™U/Üï#¢Ø#U‹R¾Š5ÌÀ8Kçij¶’¢OJ<Ğª¯´QmeĞï4¹¾Bã¿~u~[Ú5°²ØÓ¬`ä¥ 2m¤ÙfèÁÉViâùlš";) ˆ82°npC;e –ñz¤Ò+
++9äîÒ\p_4Uƒ. LKk!5Ò† ¹U5æì6Lp'lZô¤O-baû çáĞnŒ›ÑNaà7»öG§P.7ìw7A/œ2Ë›VÛ¯†Cgs÷¨!ØKE±¡äbNÉªK-ÊşœD‘uËÊz ÿÿB ßvX(xĞE µ„­Y$kZÕkS4>?Ò‡"b¯nZÜ˜8Hì‰âµ>¯¬!ûÍMw™é»Ü°Û!°JŸ¼ïè–jÙ8ø¾ã;>9ì9»ĞÓL—)[Úv=LŒøØ‡©ÎAä58Îß-ığ0k×;ş£şŸ]Pç¸lÁ©XŸ½FÇèz‹ŞÙÆ…ÁIãğ/ó ¿,.}â¡›Z
+®iÔÎ{ƒM«/qG&TínÜaÎ*ìFKªµ}xeú9Hm®¨Ál££šñWÀ9í£ÑM6œ©İğPĞ¯ß©¾#Z|Ìö'\¡uË+ôµ{(éL"ï‘9záßü\Jx……²^è9:=ı*¿¡?gğ`&làmæh~ïŞË™œ¿wSÏÏgKJ5­â¨«„L|eWm–A Ù¦ƒ_³yš<¥a	 # “º½ñx+)JMU05c040031Q(È/.qKMMIJLÎöÉOOO-
+N-*ËLNÕKÏgÈöìÖğ–k‘ú1}JãÁğÊyá+³®X‹6ccb85a791e828d769e7a901c41ffb1f41f734df
+# pack-refs with: peeled fully-peeled sorted 
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f refs/remotes/origin/local
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f refs/remotes/origin/master
+6ccb85a791e828d769e7a901c41ffb1f41f734df
+40cada8be00824d7c48a96f02b89f1f347012eba
+ref: refs/remotes/origin/master
+6ccb85a791e828d769e7a901c41ffb1f41f734df
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+// Sequence to Pseudocode	01/31/2024 02:20 PM
+package circuitbreaker
+
+import (
+	"context"
+	"time"
+
+	MMLogger "postFeedback/logger"
+	MMErr "postFeedback/mmerror"
+	"postFeedback/mongoConnect"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type CircuitBreakerDetail struct {
+	ID             string    `bson:"_id,omitempty"`
+	APIName        string    `bson:"api_name"`
+	CurrentState   string    `bson:"current_state"`
+	FailureCount   int       `bson:"failure_count"`
+	SuccessCount   int       `bson:"success_count"`
+	NextAttempt    time.Time `bson:"next_attempt"`
+	StateTimeStamp time.Time `bson:"state_time_stamp"`
+	CreatedBy      string    `bson:"created_by"`
+	CreatedOn      time.Time `bson:"created_on"`
+	LastModifiedBy string    `bson:"last_modified_by"`
+	LastModifiedOn time.Time `bson:"last_modified_on"`
+	IsActive       int       `bson:"is_active"`
+}
+
+var logger *MMLogger.Logger
+var detail CircuitBreakerDetail
+
+type CircuitBreaker struct {
+	client MongoConnect.MongoDBInterface
+}
+
+const (
+	Closed           = "Closed"
+	HalfOpen         = "HalfOpen"
+	Open             = "Open"
+	SuccessThreshold = 3
+	FailureThreshold = 3
+)
+
+type Request struct{}
+type Response struct{}
+
+type CircuitBreakerInterface interface {
+	Execute(serviceName string, request *Request) (*Response, *MMErr.AppError)
+}
+
+func NewCircuitBreaker(client MongoConnect.MongoDBInterface) *CircuitBreaker {
+	logger = MMLogger.NewLogger()
+	return &CircuitBreaker{client: client}
+}
+
+var collection *mongo.Collection
+
+func (cb *CircuitBreaker) Execute(service func(interface{}) (interface{}, interface{}), serviceName string, request interface{}) (interface{}, *MMErr.AppError) {
+	db, err := cb.client.GetAppClient()
+	if err != nil {
+		logger.Info("Unexpected Error", err)
+		return nil, err
+	}
+
+	collection := db.Collection("CircuitBreaker")
+
+	defer db.Client().Disconnect(context.TODO())
+
+	filter := bson.M{"api_name": serviceName}
+
+	findErr := collection.FindOne(context.Background(), filter).Decode(&detail)
+	if err != nil {
+		logger.Info("Unexpected Error", findErr.Error())
+		return nil, MMErr.NewUnexpectedError(findErr.Error())
+	}
+	ShouldAttempt := time.Now().After(detail.NextAttempt)
+	var response interface{}
+	if detail.CurrentState == Closed || (detail.CurrentState == HalfOpen && ShouldAttempt) {
+		response, _ := service(request)
+		response.statusCode
+		if response["StatusCode"] != 500 {
+			cb.UpdateCircuitBreakerState(serviceName, detail)
+			return response, nil
+		} else {
+			detail.FailureCount++
+			if detail.FailureCount > 3 {
+				detail.CurrentState = Open
+				detail.NextAttempt = time.Now()
+			}
+			cb.UpdateCircuitBreakerState(serviceName, detail)
+			return nil, cb.HandleFailure(serviceName, "Unexpected Error")
+		}
+	} else if detail.CurrentState == Open && !ShouldAttempt {
+		return nil, cb.HandleFailure(serviceName, "Circuit State is Open")
+	}
+
+	return response, nil
+}
+
+func (cb *CircuitBreaker) UpdateCircuitBreakerState(serviceName string, detail CircuitBreakerDetail) {
+
+	filter := bson.M{"api_name": serviceName}
+	update := bson.M{"$set": bson.M{"current_state": detail.CurrentState}}
+	_, err := collection.UpdateOne(context.Background(), filter, update)
+	if err != nil {
+		logger.Info("Unexpected Error", err.Error())
+	}
+}
+
+func (cb *CircuitBreaker) GetCircuitBreakerState(serviceName string) string {
+	filter := bson.M{"api_name": serviceName}
+	var detail dto.CircuitBreakerDetail
+	err := collection.FindOne(context.Background(), filter).Decode(&detail)
+	if err != nil {
+		logger.Info("Unexpected Error", err.Error())
+	}
+
+	return detail.CurrentState
+}
+
+func (cb *CircuitBreaker) HandleFailure(serviceName string, message string) *MMErr.AppError {
+	return MMErr.NewUnexpectedError(message)
+}
+package controller
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	service "postFeedback/Service"
+	"postFeedback/dto"
+)
+
+type PostFeedbackController struct {
+	service service.PostFeedBackServiceI
+}
+
+type PostFeedBackControllerI interface {
+	PostFeedback(w http.ResponseWriter, r *http.Request)
+	WriteResponse(w http.ResponseWriter, statusCode int, data interface{})
+}
+
+func NewFeedbackController(service service.PostFeedBackServiceI) PostFeedbackController {
+	return PostFeedbackController{service: service}
+}
+
+func (c *PostFeedbackController) PostFeedback(w http.ResponseWriter, r *http.Request) {
+	var feedback dto.Request
+
+	json.NewDecoder(r.Body).Decode(&feedback)
+
+	err := dto.Validate(feedback)
+	if err != nil {
+		c.WriteResponse(w, 400, &dto.Response{StatusCode: "400", StatusMessage: "Bad Request"})
+		return
+	}
+
+	result, err := c.service.PostFeedback(feedback)
+	if err != nil {
+		c.WriteResponse(w, 400, &dto.Response{StatusCode: "500", StatusMessage: "Failed to Insert the Feedback."})
+		return
+	}
+
+	fmt.Println(result)
+	c.WriteResponse(w, 200, result)
+}
+
+func (c PostFeedbackController) WriteResponse(w http.ResponseWriter, statusCode int, data interface{}) {
+
+	w.Header().Add("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+
+	json.NewEncoder(w).Encode(data)
+}
+package dto
+
+import (
+	MMErr "postFeedback/mmerror"
+	"time"
+
+	"github.com/go-playground/validator"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type ProjectFeedback struct {
+	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	ProjectID        primitive.ObjectID `bson:"project_id" json:"project_id" `
+	ProjectName      string             `bson:"project_name" json:"project_name"`
+	UserID           primitive.ObjectID `bson:"user_id" json:"user_id"`
+	OrganizationName string             `bson:"organization_name" json:"organization_name"`
+	FeedbackRating   int                `bson:"feedback_rating" json:"feedback_rating"`
+	FeedbackComment  string             `bson:"feedback_comment" json:"feedback_comment"`
+	CreatedBy        primitive.ObjectID `bson:"created_by" json:"created_by"`
+	CreatedOn        time.Time          `bson:"created_on" json:"created_on"`
+	ModifiedBy       primitive.ObjectID `bson:"last_modified_by" json:"modified_by"`
+	ModifiedOn       time.Time          `bson:"last_modified_on" json:"modified_on"`
+	IsActive         int                `bson:"is_active" json:"is_active"`
+}
+
+type Request struct {
+	ProjectId       string `bson:"project_id" json:"project_id" validate:"required"`
+	ProjectName     string `bson:"project_name" json:"project_name" validate:"required"`
+	UserId          string `bson:"user_id" json:"user_id" validate:"required"`
+	FeedbackRating  int    `bson:"feedback_rating" json:"feedback Rating" validate:"oneof=1 2 3 4 5"`
+	FeedbackComment string `bson:"feedback_comment" json:"feedback Comment" validate:"required"`
+}
+
+type Response struct {
+	StatusCode    string `json:"StatusCode"`
+	StatusMessage string `json:"StatusMessage"`
+}
+
+type UserDetails struct {
+	Organization_ID primitive.ObjectID `bson:"organization_id" json:"organization_id"`
+}
+
+type OrgDetails struct {
+	OrganizationName string `bson:"organization_name" json:"organization_name"`
+}
+
+func Validate(p Request) *MMErr.AppError {
+	validate := validator.New()
+
+	if err := validate.Struct(p); err != nil {
+		return MMErr.NewBadRequestError("Bad request")
+	}
+	return nil
+}
+module postFeedback
+
+go 1.21.1
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/joho/godotenv v1.5.1
+	go.mongodb.org/mongo-driver v1.14.0
+)
+
+require (
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+)
+
+require (
+	github.com/go-playground/validator v9.31.0+incompatible
+	github.com/gofiber/fiber/v2 v2.52.0
+	github.com/golang/snappy v0.0.1 // indirect
+	github.com/klauspost/compress v1.17.0 // indirect
+	github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.1.2 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d // indirect
+	golang.org/x/crypto v0.17.0 // indirect
+	golang.org/x/sync v0.1.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
+)
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/go-playground/locales v0.14.1 h1:EWaQ/wswjilfKLTECiXz7Rh+3BjFhfDFKv/oXslEjJA=
+github.com/go-playground/locales v0.14.1/go.mod h1:hxrqLVvrK65+Rwrd5Fc6F2O76J/NuW9t0sjnWqG1slY=
+github.com/go-playground/universal-translator v0.18.1 h1:Bcnm0ZwsGyWbCzImXv+pAJnYK9S473LQFuzCbDbfSFY=
+github.com/go-playground/universal-translator v0.18.1/go.mod h1:xekY+UJKNuX9WP91TpwSH2VMlDf28Uj24BCp08ZFTUY=
+github.com/go-playground/validator v9.31.0+incompatible h1:UA72EPEogEnq76ehGdEDp4Mit+3FDh548oRqwVgNsHA=
+github.com/go-playground/validator v9.31.0+incompatible/go.mod h1:yrEkQXlcI+PugkyDjY2bRrL/UBU4f3rvrgkN3V8JEig=
+github.com/gofiber/fiber/v2 v2.52.0 h1:S+qXi7y+/Pgvqq4DrSmREGiFwtB7Bu6+QFLuIHYw/UE=
+github.com/gofiber/fiber/v2 v2.52.0/go.mod h1:KEOE+cXMhXG0zHc9d8+E38hoX+ZN7bhOtgeF2oT6jrQ=
+github.com/golang/snappy v0.0.1 h1:Qgr9rKW7uDUkrbSmQeiDsGa8SjGyCOGtuasMWwvp2P4=
+github.com/golang/snappy v0.0.1/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEWrmP2Q=
+github.com/google/go-cmp v0.5.2 h1:X2ev0eStA3AbceY54o37/0PQ/UWqKEiiO2dKL5OPaFM=
+github.com/google/go-cmp v0.5.2/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
+github.com/google/uuid v1.5.0 h1:1p67kYwdtXjb0gL0BPiP1Av9wiZPo5A8z2cWkTZ+eyU=
+github.com/google/uuid v1.5.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=
+github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=
+github.com/klauspost/compress v1.17.0 h1:Rnbp4K9EjcDuVuHtd0dgA4qNuv9yKDYKK1ulpJwgrqM=
+github.com/klauspost/compress v1.17.0/go.mod h1:ntbaceVETuRiXiv4DpjP66DpAtAGkEQskQzEyD//IeE=
+github.com/leodido/go-urn v1.4.0 h1:WT9HwE9SGECu3lg4d/dIA+jxlljEa1/ffXKmRjqdmIQ=
+github.com/leodido/go-urn v1.4.0/go.mod h1:bvxc+MVxLKB4z00jd1z+Dvzr47oO32F/QSNjSBOlFxI=
+github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe h1:iruDEfMl2E6fbMZ9s0scYfZQ84/6SPL6zC8ACM2oIL0=
+github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe/go.mod h1:wL8QJuTMNUDYhXwkmfOly8iTdp5TEcJFWZD2D7SIkUc=
+github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
+github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
+github.com/xdg-go/pbkdf2 v1.0.0 h1:Su7DPu48wXMwC3bs7MCNG+z4FhcyEuz5dlvchbq0B0c=
+github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=
+github.com/xdg-go/scram v1.1.2 h1:FHX5I5B4i4hKRVRBCFRxq1iQRej7WO3hhBuJf+UUySY=
+github.com/xdg-go/scram v1.1.2/go.mod h1:RT/sEzTbU5y00aCK8UOx6R7YryM0iF1N2MOmC3kKLN4=
+github.com/xdg-go/stringprep v1.0.4 h1:XLI/Ng3O1Atzq0oBs3TWm+5ZVgkq2aqdlvP9JtoZ6c8=
+github.com/xdg-go/stringprep v1.0.4/go.mod h1:mPGuuIYwz7CmR2bT9j4GbQqutWS1zV24gijq1dTyGkM=
+github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d h1:splanxYIlg+5LfHAM6xpdFEAYOk8iySO56hMFq6uLyA=
+github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d/go.mod h1:rHwXgn7JulP+udvsHwJoVG1YGAP6VLg4y9I5dyZdqmA=
+github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
+go.mongodb.org/mongo-driver v1.14.0 h1:P98w8egYRjYe3XDjxhYJagTokP/H6HzlsnojRgZRd80=
+go.mongodb.org/mongo-driver v1.14.0/go.mod h1:Vzb0Mk/pa7e6cWw85R4F/endUC3u0U9jGcNU603k65c=
+golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
+golang.org/x/crypto v0.17.0 h1:r8bRNjWL3GshPW3gkd+RpvzWrZAwPS49OmTGZ/uhM4k=
+golang.org/x/crypto v0.17.0/go.mod h1:gCAAfMLgwOJRpTjQ2zCCt2OcSfYMTeZVSRtQlPC7Nq4=
+golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
+golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
+golang.org/x/net v0.0.0-20220722155237-a158d28d115b/go.mod h1:XRhObCWvk6IyKnWLug+ECip1KBveYUHfp+8e9klMJ9c=
+golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.1.0 h1:wsuoTGHzEhffawBOhz5CYhcrV4IdKZbEyZjBMuTp12o=
+golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
+golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
+golang.org/x/text v0.3.8/go.mod h1:E6s5w1FMmriuDzIBO73fBruAKo1PCIq6d2Q6DHfQ8WQ=
+golang.org/x/text v0.14.0 h1:ScX5w1eTa3QqT8oi6+ziP7dTV1S2+ALU0bI+0zXKWiQ=
+golang.org/x/text v0.14.0/go.mod h1:18ZOQIKpY8NJVqYksKHtTdi31H5itFRjB5/qKTNYzSU=
+golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e/go.mod h1:b+2E5dAYhXwXZwtnZ6UAqBI28+e2cm9otk0dWdXHAEo=
+golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc=
+golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 h1:E7g+9GITq07hpfrRu66IVDexMakfv52eLZ2CXBWiKr4=
+golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+package MMLogger
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+func (l *Logger) log(level LogLevel, logMessage interface{}, args ...interface{}) {
+	if level > l.level {
+		return
+	}
+	var message string
+	switch m := logMessage.(type) {
+	case string:
+		message = fmt.Sprintf(m, args...)
+	case fmt.Stringer:
+		message = m.String()
+	default:
+		v := reflect.ValueOf(m)
+		if v.Kind() == reflect.Struct {
+			var b strings.Builder
+			b.WriteString("{")
+			for i := 0; i < v.NumField(); i++ {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%s: %v", v.Type().Field(i).Name, v.Field(i))
+			}
+			b.WriteString("}")
+			message = b.String()
+		} else {
+			message = fmt.Sprintf("%+v", m)
+		}
+	}
+	message = l.maskSensitiveWords(message)
+	if len(message) > maxMessageLength {
+		message = message[:maxMessageLength] + " [log trimmed]"
+	}
+	timestamp := time.Now().Format("2024-02-28 15:04:05")
+	logLevel := [...]string{"INFO", "DEBUG", "ERROR"}[level]
+	logMessageFmt := fmt.Sprintf("TimeStamp: [%s] LogLevel: [%s] LogMessage: %s\n", timestamp, logLevel, message)
+	fmt.Print(logMessageFmt)
+}
+
+func (l *Logger) Info(format interface{}, args ...interface{}) {
+	l.log(INFO, format, args...)
+}
+func (l *Logger) Debug(format interface{}, args ...interface{}) {
+	l.log(DEBUG, format, args...)
+}
+
+func (l *Logger) Error(format interface{}, args ...interface{}) {
+	l.log(ERROR, format, args...)
+}
+
+///
+
+const maxMessageLength = 1000
+
+type LogLevel int64
+
+const (
+	INFO LogLevel = iota
+	DEBUG
+	ERROR
+)
+
+type Logger struct {
+	level       LogLevel
+	wordsToMask []string
+}
+
+func NewLogger() *Logger {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
+	var logStr = os.Getenv("Log_Level")
+	logInt, _ := strconv.ParseInt(logStr, 10, 64)
+	var loglevel = LogLevel(logInt)
+	// level:= loglevel
+	switch loglevel {
+	case INFO:
+		loglevel = INFO
+
+	case DEBUG:
+		loglevel = DEBUG
+
+	case ERROR:
+		loglevel = ERROR
+
+	default:
+		loglevel = INFO
+	}
+	wordsToMask := []string{"Hello", "World", "PlanCost"}
+	return &Logger{
+		level:       loglevel,
+		wordsToMask: wordsToMask,
+	}
+
+}
+
+func (l *Logger) SetLevel(level LogLevel) {
+	l.level = level
+}
+
+//
+
+func (l *Logger) maskSensitiveWords(message string) string {
+	maskedMessage := message
+	for _, word := range l.wordsToMask {
+		maskedMessage = strings.Replace(maskedMessage, word, strings.Repeat("*", len(word)), -1)
+	}
+	return maskedMessage
+}
+package main
+
+import (
+	"net/http"
+	controller "postFeedback/Controller"
+	repository "postFeedback/Repository"
+	service "postFeedback/Service"
+	MongoConnect "postFeedback/mongoconnect"
+
+	"github.com/gorilla/mux"
+)
+
+func main() {
+	Database := MongoConnect.MongoDB{}
+	Repository := repository.NewFeedbackRepository(&Database)
+	Service := service.NewFeedbackService(&Repository)
+	Controller := controller.NewFeedbackController(&Service)
+
+	router := mux.NewRouter()
+	router.HandleFunc("/postfeedback", Controller.PostFeedback).Methods("POST")
+	http.ListenAndServe("localhost:5001", router)
+}
+package MMErr
+
+import (
+	"net/http"
+)
+
+type AppError struct {
+	Code    int    `json:",omitempty"`
+	Message string `json:"message"`
+}
+
+func (e AppError) AsMessage() *AppError {
+	return &AppError{
+		Message: e.Message,
+	}
+}
+
+func NewNoContentError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusNoContent,
+	}
+}
+
+func NewUnexpectedError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusInternalServerError,
+	}
+}
+
+func NewBadRequestError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusBadRequest,
+	}
+}
+
+func NewAuthenticationError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusUnauthorized,
+	}
+}
+
+func NewAuthorizationError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusForbidden,
+	}
+}
+Log_level="2"pseudo code mapping
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+[remote "origin"]
+	url = https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "master"]
+	remote = origin
+	merge = refs/heads/master
+[branch "local"]
+	remote = origin
+	merge = refs/heads/local
+Unnamed repository; edit this file 'description' to name the repository.
+593c4e983571729e818e92feb1d2fff3da61db23		branch 'local' of https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+ref: refs/heads/local
+#!/bin/sh
+#
+# An example hook script to check the commit log message taken by
+# applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.  The hook is
+# allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "applypatch-msg".
+
+. git-sh-setup
+commitmsg="$(git rev-parse --git-path hooks/commit-msg)"
+test -x "$commitmsg" && exec "$commitmsg" ${1+"$@"}
+:
+#!/bin/sh
+#
+# An example hook script to check the commit log message.
+# Called by "git commit" with one argument, the name of the file
+# that has the commit message.  The hook should exit with non-zero
+# status after issuing an appropriate message if it wants to stop the
+# commit.  The hook is allowed to edit the commit message file.
+#
+# To enable this hook, rename this file to "commit-msg".
+
+# Uncomment the below to add a Signed-off-by line to the message.
+# Doing this in a hook is a bad idea in general, but the prepare-commit-msg
+# hook is more suited to it.
+#
+# SOB=$(git var GIT_AUTHOR_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# grep -qs "^$SOB" "$1" || echo "$SOB" >> "$1"
+
+# This example catches duplicate Signed-off-by lines.
+
+test "" = "$(grep '^Signed-off-by: ' "$1" |
+	 sort | uniq -c | sed -e '/^[ 	]*1[ 	]/d')" || {
+	echo >&2 Duplicate Signed-off-by lines.
+	exit 1
+}
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use IPC::Open2;
+
+# An example hook script to integrate Watchman
+# (https://facebook.github.io/watchman/) with git to speed up detecting
+# new and modified files.
+#
+# The hook is passed a version (currently 2) and last update token
+# formatted as a string and outputs to stdout a new update token and
+# all files that have been modified since the update token. Paths must
+# be relative to the root of the working tree and separated by a single NUL.
+#
+# To enable this hook, rename this file to "query-watchman" and set
+# 'git config core.fsmonitor .git/hooks/query-watchman'
+#
+my ($version, $last_update_token) = @ARGV;
+
+# Uncomment for debugging
+# print STDERR "$0 $version $last_update_token\n";
+
+# Check the hook interface version
+if ($version ne 2) {
+	die "Unsupported query-fsmonitor hook version '$version'.\n" .
+	    "Falling back to scanning...\n";
+}
+
+my $git_work_tree = get_working_dir();
+
+my $retry = 1;
+
+my $json_pkg;
+eval {
+	require JSON::XS;
+	$json_pkg = "JSON::XS";
+	1;
+} or do {
+	require JSON::PP;
+	$json_pkg = "JSON::PP";
+};
+
+launch_watchman();
+
+sub launch_watchman {
+	my $o = watchman_query();
+	if (is_work_tree_watched($o)) {
+		output_result($o->{clock}, @{$o->{files}});
+	}
+}
+
+sub output_result {
+	my ($clockid, @files) = @_;
+
+	# Uncomment for debugging watchman output
+	# open (my $fh, ">", ".git/watchman-output.out");
+	# binmode $fh, ":utf8";
+	# print $fh "$clockid\n@files\n";
+	# close $fh;
+
+	binmode STDOUT, ":utf8";
+	print $clockid;
+	print "\0";
+	local $, = "\0";
+	print @files;
+}
+
+sub watchman_clock {
+	my $response = qx/watchman clock "$git_work_tree"/;
+	die "Failed to get clock id on '$git_work_tree'.\n" .
+		"Falling back to scanning...\n" if $? != 0;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub watchman_query {
+	my $pid = open2(\*CHLD_OUT, \*CHLD_IN, 'watchman -j --no-pretty')
+	or die "open2() failed: $!\n" .
+	"Falling back to scanning...\n";
+
+	# In the query expression below we're asking for names of files that
+	# changed since $last_update_token but not from the .git folder.
+	#
+	# To accomplish this, we're using the "since" generator to use the
+	# recency index to select candidate nodes and "fields" to limit the
+	# output to file names only. Then we're using the "expression" term to
+	# further constrain the results.
+	my $last_update_line = "";
+	if (substr($last_update_token, 0, 1) eq "c") {
+		$last_update_token = "\"$last_update_token\"";
+		$last_update_line = qq[\n"since": $last_update_token,];
+	}
+	my $query = <<"	END";
+		["query", "$git_work_tree", {$last_update_line
+			"fields": ["name"],
+			"expression": ["not", ["dirname", ".git"]]
+		}]
+	END
+
+	# Uncomment for debugging the watchman query
+	# open (my $fh, ">", ".git/watchman-query.json");
+	# print $fh $query;
+	# close $fh;
+
+	print CHLD_IN $query;
+	close CHLD_IN;
+	my $response = do {local $/; <CHLD_OUT>};
+
+	# Uncomment for debugging the watch response
+	# open ($fh, ">", ".git/watchman-response.json");
+	# print $fh $response;
+	# close $fh;
+
+	die "Watchman: command returned no output.\n" .
+	"Falling back to scanning...\n" if $response eq "";
+	die "Watchman: command returned invalid output: $response\n" .
+	"Falling back to scanning...\n" unless $response =~ /^\{/;
+
+	return $json_pkg->new->utf8->decode($response);
+}
+
+sub is_work_tree_watched {
+	my ($output) = @_;
+	my $error = $output->{error};
+	if ($retry > 0 and $error and $error =~ m/unable to resolve root .* directory (.*) is not watched/) {
+		$retry--;
+		my $response = qx/watchman watch "$git_work_tree"/;
+		die "Failed to make watchman watch '$git_work_tree'.\n" .
+		    "Falling back to scanning...\n" if $? != 0;
+		$output = $json_pkg->new->utf8->decode($response);
+		$error = $output->{error};
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		# Uncomment for debugging watchman output
+		# open (my $fh, ">", ".git/watchman-output.out");
+		# close $fh;
+
+		# Watchman will always return all files on the first query so
+		# return the fast "everything is dirty" flag to git and do the
+		# Watchman query just to get it over with now so we won't pay
+		# the cost in git to look up each individual file.
+		my $o = watchman_clock();
+		$error = $output->{error};
+
+		die "Watchman: $error.\n" .
+		"Falling back to scanning...\n" if $error;
+
+		output_result($o->{clock}, ("/"));
+		$last_update_token = $o->{clock};
+
+		eval { launch_watchman() };
+		return 0;
+	}
+
+	die "Watchman: $error.\n" .
+	"Falling back to scanning...\n" if $error;
+
+	return 1;
+}
+
+sub get_working_dir {
+	my $working_dir;
+	if ($^O =~ 'msys' || $^O =~ 'cygwin') {
+		$working_dir = Win32::GetCwd();
+		$working_dir =~ tr/\\/\//;
+	} else {
+		require Cwd;
+		$working_dir = Cwd::cwd();
+	}
+
+	return $working_dir;
+}
+#!/bin/sh
+#
+# An example hook script to prepare a packed repository for use over
+# dumb transports.
+#
+# To enable this hook, rename this file to "post-update".
+
+exec git update-server-info
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed
+# by applypatch from an e-mail message.
+#
+# The hook should exit with non-zero status after issuing an
+# appropriate message if it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-applypatch".
+
+. git-sh-setup
+precommit="$(git rev-parse --git-path hooks/pre-commit)"
+test -x "$precommit" && exec "$precommit" ${1+"$@"}
+:
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git commit" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message if
+# it wants to stop the commit.
+#
+# To enable this hook, rename this file to "pre-commit".
+
+if git rev-parse --verify HEAD >/dev/null 2>&1
+then
+	against=HEAD
+else
+	# Initial commit: diff against an empty tree object
+	against=$(git hash-object -t tree /dev/null)
+fi
+
+# If you want to allow non-ASCII filenames set this variable to true.
+allownonascii=$(git config --type=bool hooks.allownonascii)
+
+# Redirect output to stderr.
+exec 1>&2
+
+# Cross platform projects tend to avoid non-ASCII filenames; prevent
+# them from being added to the repository. We exploit the fact that the
+# printable range starts at the space character and ends with tilde.
+if [ "$allownonascii" != "true" ] &&
+	# Note that the use of brackets around a tr range is ok here, (it's
+	# even required, for portability to Solaris 10's /usr/bin/tr), since
+	# the square bracket bytes happen to fall in the designated range.
+	test $(git diff --cached --name-only --diff-filter=A -z $against |
+	  LC_ALL=C tr -d '[ -~]\0' | wc -c) != 0
+then
+	cat <<\EOF
+Error: Attempt to add a non-ASCII file name.
+
+This can cause problems if you want to work with people on other platforms.
+
+To be portable it is advisable to rename the file.
+
+If you know what you are doing you can disable this check using:
+
+  git config hooks.allownonascii true
+EOF
+	exit 1
+fi
+
+# If there are whitespace errors, print the offending file names and fail.
+exec git diff-index --check --cached $against --
+#!/bin/sh
+#
+# An example hook script to verify what is about to be committed.
+# Called by "git merge" with no arguments.  The hook should
+# exit with non-zero status after issuing an appropriate message to
+# stderr if it wants to stop the merge commit.
+#
+# To enable this hook, rename this file to "pre-merge-commit".
+
+. git-sh-setup
+test -x "$GIT_DIR/hooks/pre-commit" &&
+        exec "$GIT_DIR/hooks/pre-commit"
+:
+#!/bin/sh
+#
+# An example hook script to prepare the commit log message.
+# Called by "git commit" with the name of the file that has the
+# commit message, followed by the description of the commit
+# message's source.  The hook's purpose is to edit the commit
+# message file.  If the hook fails with a non-zero status,
+# the commit is aborted.
+#
+# To enable this hook, rename this file to "prepare-commit-msg".
+
+# This hook includes three examples. The first one removes the
+# "# Please enter the commit message..." help message.
+#
+# The second includes the output of "git diff --name-status -r"
+# into the message, just before the "git status" output.  It is
+# commented because it doesn't cope with --amend or with squashed
+# commits.
+#
+# The third example adds a Signed-off-by line to the message, that can
+# still be edited.  This is rarely a good idea.
+
+COMMIT_MSG_FILE=$1
+COMMIT_SOURCE=$2
+SHA1=$3
+
+/usr/bin/perl -i.bak -ne 'print unless(m/^. Please enter the commit message/..m/^#$/)' "$COMMIT_MSG_FILE"
+
+# case "$COMMIT_SOURCE,$SHA1" in
+#  ,|template,)
+#    /usr/bin/perl -i.bak -pe '
+#       print "\n" . `git diff --cached --name-status -r`
+# 	 if /^#/ && $first++ == 0' "$COMMIT_MSG_FILE" ;;
+#  *) ;;
+# esac
+
+# SOB=$(git var GIT_COMMITTER_IDENT | sed -n 's/^\(.*>\).*$/Signed-off-by: \1/p')
+# git interpret-trailers --in-place --trailer "$SOB" "$COMMIT_MSG_FILE"
+# if test -z "$COMMIT_SOURCE"
+# then
+#   /usr/bin/perl -i.bak -pe 'print "\n" if !$first_line++' "$COMMIT_MSG_FILE"
+# fi
+#!/bin/sh
+
+# An example hook script to verify what is about to be pushed.  Called by "git
+# push" after it has checked the remote status, but before anything has been
+# pushed.  If this script exits with a non-zero status nothing will be pushed.
+#
+# This hook is called with the following parameters:
+#
+# $1 -- Name of the remote to which the push is being done
+# $2 -- URL to which the push is being done
+#
+# If pushing without using a named remote those arguments will be equal.
+#
+# Information about the commits which are being pushed is supplied as lines to
+# the standard input in the form:
+#
+#   <local ref> <local oid> <remote ref> <remote oid>
+#
+# This sample shows how to prevent push of commits where the log message starts
+# with "WIP" (work in progress).
+
+remote="$1"
+url="$2"
+
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+
+while read local_ref local_oid remote_ref remote_oid
+do
+	if test "$local_oid" = "$zero"
+	then
+		# Handle delete
+		:
+	else
+		if test "$remote_oid" = "$zero"
+		then
+			# New branch, examine all commits
+			range="$local_oid"
+		else
+			# Update to existing branch, examine new commits
+			range="$remote_oid..$local_oid"
+		fi
+
+		# Check for WIP commit
+		commit=$(git rev-list -n 1 --grep '^WIP' "$range")
+		if test -n "$commit"
+		then
+			echo >&2 "Found WIP commit in $local_ref, not pushing"
+			exit 1
+		fi
+	fi
+done
+
+exit 0
+#!/bin/sh
+#
+# Copyright (c) 2006, 2008 Junio C Hamano
+#
+# The "pre-rebase" hook is run just before "git rebase" starts doing
+# its job, and can prevent the command from running by exiting with
+# non-zero status.
+#
+# The hook is called with the following parameters:
+#
+# $1 -- the upstream the series was forked from.
+# $2 -- the branch being rebased (or empty when rebasing the current branch).
+#
+# This sample shows how to prevent topic branches that are already
+# merged to 'next' branch from getting rebased, because allowing it
+# would result in rebasing already published history.
+
+publish=next
+basebranch="$1"
+if test "$#" = 2
+then
+	topic="refs/heads/$2"
+else
+	topic=`git symbolic-ref HEAD` ||
+	exit 0 ;# we do not interrupt rebasing detached HEAD
+fi
+
+case "$topic" in
+refs/heads/??/*)
+	;;
+*)
+	exit 0 ;# we do not interrupt others.
+	;;
+esac
+
+# Now we are dealing with a topic branch being rebased
+# on top of master.  Is it OK to rebase it?
+
+# Does the topic really exist?
+git show-ref -q "$topic" || {
+	echo >&2 "No such branch $topic"
+	exit 1
+}
+
+# Is topic fully merged to master?
+not_in_master=`git rev-list --pretty=oneline ^master "$topic"`
+if test -z "$not_in_master"
+then
+	echo >&2 "$topic is fully merged to master; better remove it."
+	exit 1 ;# we could allow it, but there is no point.
+fi
+
+# Is topic ever merged to next?  If so you should not be rebasing it.
+only_next_1=`git rev-list ^master "^$topic" ${publish} | sort`
+only_next_2=`git rev-list ^master           ${publish} | sort`
+if test "$only_next_1" = "$only_next_2"
+then
+	not_in_topic=`git rev-list "^$topic" master`
+	if test -z "$not_in_topic"
+	then
+		echo >&2 "$topic is already up to date with master"
+		exit 1 ;# we could allow it, but there is no point.
+	else
+		exit 0
+	fi
+else
+	not_in_next=`git rev-list --pretty=oneline ^${publish} "$topic"`
+	/usr/bin/perl -e '
+		my $topic = $ARGV[0];
+		my $msg = "* $topic has commits already merged to public branch:\n";
+		my (%not_in_next) = map {
+			/^([0-9a-f]+) /;
+			($1 => 1);
+		} split(/\n/, $ARGV[1]);
+		for my $elem (map {
+				/^([0-9a-f]+) (.*)$/;
+				[$1 => $2];
+			} split(/\n/, $ARGV[2])) {
+			if (!exists $not_in_next{$elem->[0]}) {
+				if ($msg) {
+					print STDERR $msg;
+					undef $msg;
+				}
+				print STDERR " $elem->[1]\n";
+			}
+		}
+	' "$topic" "$not_in_next" "$not_in_master"
+	exit 1
+fi
+
+<<\DOC_END
+
+This sample hook safeguards topic branches that have been
+published from being rewound.
+
+The workflow assumed here is:
+
+ * Once a topic branch forks from "master", "master" is never
+   merged into it again (either directly or indirectly).
+
+ * Once a topic branch is fully cooked and merged into "master",
+   it is deleted.  If you need to build on top of it to correct
+   earlier mistakes, a new topic branch is created by forking at
+   the tip of the "master".  This is not strictly necessary, but
+   it makes it easier to keep your history simple.
+
+ * Whenever you need to test or publish your changes to topic
+   branches, merge them into "next" branch.
+
+The script, being an example, hardcodes the publish branch name
+to be "next", but it is trivial to make it configurable via
+$GIT_DIR/config mechanism.
+
+With this workflow, you would want to know:
+
+(1) ... if a topic branch has ever been merged to "next".  Young
+    topic branches can have stupid mistakes you would rather
+    clean up before publishing, and things that have not been
+    merged into other branches can be easily rebased without
+    affecting other people.  But once it is published, you would
+    not want to rewind it.
+
+(2) ... if a topic branch has been fully merged to "master".
+    Then you can delete it.  More importantly, you should not
+    build on top of it -- other people may already want to
+    change things related to the topic as patches against your
+    "master", so if you need further changes, it is better to
+    fork the topic (perhaps with the same name) afresh from the
+    tip of "master".
+
+Let's look at this example:
+
+		   o---o---o---o---o---o---o---o---o---o "next"
+		  /       /           /           /
+		 /   a---a---b A     /           /
+		/   /               /           /
+	       /   /   c---c---c---c B         /
+	      /   /   /             \         /
+	     /   /   /   b---b C     \       /
+	    /   /   /   /             \     /
+    ---o---o---o---o---o---o---o---o---o---o---o "master"
+
+
+A, B and C are topic branches.
+
+ * A has one fix since it was merged up to "next".
+
+ * B has finished.  It has been fully merged up to "master" and "next",
+   and is ready to be deleted.
+
+ * C has not merged to "next" at all.
+
+We would want to allow C to be rebased, refuse A, and encourage
+B to be deleted.
+
+To compute (1):
+
+	git rev-list ^master ^topic next
+	git rev-list ^master        next
+
+	if these match, topic has not merged in next at all.
+
+To compute (2):
+
+	git rev-list master..topic
+
+	if this is empty, it is fully merged to "master".
+
+DOC_END
+#!/bin/sh
+#
+# An example hook script to make use of push options.
+# The example simply echoes all push options that start with 'echoback='
+# and rejects all pushes when the "reject" push option is used.
+#
+# To enable this hook, rename this file to "pre-receive".
+
+if test -n "$GIT_PUSH_OPTION_COUNT"
+then
+	i=0
+	while test "$i" -lt "$GIT_PUSH_OPTION_COUNT"
+	do
+		eval "value=\$GIT_PUSH_OPTION_$i"
+		case "$value" in
+		echoback=*)
+			echo "echo from the pre-receive-hook: ${value#*=}" >&2
+			;;
+		reject)
+			exit 1
+		esac
+		i=$((i + 1))
+	done
+fi
+#!/bin/sh
+
+# An example hook script to update a checked-out tree on a git push.
+#
+# This hook is invoked by git-receive-pack(1) when it reacts to git
+# push and updates reference(s) in its repository, and when the push
+# tries to update the branch that is currently checked out and the
+# receive.denyCurrentBranch configuration variable is set to
+# updateInstead.
+#
+# By default, such a push is refused if the working tree and the index
+# of the remote repository has any difference from the currently
+# checked out commit; when both the working tree and the index match
+# the current commit, they are updated to match the newly pushed tip
+# of the branch. This hook is to be used to override the default
+# behaviour; however the code below reimplements the default behaviour
+# as a starting point for convenient modification.
+#
+# The hook receives the commit with which the tip of the current
+# branch is going to be updated:
+commit=$1
+
+# It can exit with a non-zero status to refuse the push (when it does
+# so, it must not modify the index or the working tree).
+die () {
+	echo >&2 "$*"
+	exit 1
+}
+
+# Or it can make any necessary changes to the working tree and to the
+# index to bring them to the desired state when the tip of the current
+# branch is updated to the new commit, and exit with a zero status.
+#
+# For example, the hook can simply run git read-tree -u -m HEAD "$1"
+# in order to emulate git fetch that is run in the reverse direction
+# with git push, as the two-tree form of git read-tree -u -m is
+# essentially the same as git switch or git checkout that switches
+# branches while keeping the local changes in the working tree that do
+# not interfere with the difference between the branches.
+
+# The below is a more-or-less exact translation to shell of the C code
+# for the default behaviour for git's push-to-checkout hook defined in
+# the push_to_deploy() function in builtin/receive-pack.c.
+#
+# Note that the hook will be executed from the repository directory,
+# not from the working tree, so if you want to perform operations on
+# the working tree, you will have to adapt your code accordingly, e.g.
+# by adding "cd .." or using relative paths.
+
+if ! git update-index -q --ignore-submodules --refresh
+then
+	die "Up-to-date check failed"
+fi
+
+if ! git diff-files --quiet --ignore-submodules --
+then
+	die "Working directory has unstaged changes"
+fi
+
+# This is a rough translation of:
+#
+#   head_has_history() ? "HEAD" : EMPTY_TREE_SHA1_HEX
+if git cat-file -e HEAD 2>/dev/null
+then
+	head=HEAD
+else
+	head=$(git hash-object -t tree --stdin </dev/null)
+fi
+
+if ! git diff-index --quiet --cached --ignore-submodules $head --
+then
+	die "Working directory has staged changes"
+fi
+
+if ! git read-tree -u -m "$commit"
+then
+	die "Could not update working tree to new HEAD"
+fi
+#!/bin/sh
+
+# An example hook script to validate a patch (and/or patch series) before
+# sending it via email.
+#
+# The hook should exit with non-zero status after issuing an appropriate
+# message if it wants to prevent the email(s) from being sent.
+#
+# To enable this hook, rename this file to "sendemail-validate".
+#
+# By default, it will only check that the patch(es) can be applied on top of
+# the default upstream branch without conflicts in a secondary worktree. After
+# validation (successful or not) of the last patch of a series, the worktree
+# will be deleted.
+#
+# The following config variables can be set to change the default remote and
+# remote ref that are used to apply the patches against:
+#
+#   sendemail.validateRemote (default: origin)
+#   sendemail.validateRemoteRef (default: HEAD)
+#
+# Replace the TODO placeholders with appropriate checks according to your
+# needs.
+
+validate_cover_letter () {
+	file="$1"
+	# TODO: Replace with appropriate checks (e.g. spell checking).
+	true
+}
+
+validate_patch () {
+	file="$1"
+	# Ensure that the patch applies without conflicts.
+	git am -3 "$file" || return
+	# TODO: Replace with appropriate checks for this patch
+	# (e.g. checkpatch.pl).
+	true
+}
+
+validate_series () {
+	# TODO: Replace with appropriate checks for the whole series
+	# (e.g. quick build, coding style checks, etc.).
+	true
+}
+
+# main -------------------------------------------------------------------------
+
+if test "$GIT_SENDEMAIL_FILE_COUNTER" = 1
+then
+	remote=$(git config --default origin --get sendemail.validateRemote) &&
+	ref=$(git config --default HEAD --get sendemail.validateRemoteRef) &&
+	worktree=$(mktemp --tmpdir -d sendemail-validate.XXXXXXX) &&
+	git worktree add -fd --checkout "$worktree" "refs/remotes/$remote/$ref" &&
+	git config --replace-all sendemail.validateWorktree "$worktree"
+else
+	worktree=$(git config --get sendemail.validateWorktree)
+fi || {
+	echo "sendemail-validate: error: failed to prepare worktree" >&2
+	exit 1
+}
+
+unset GIT_DIR GIT_WORK_TREE
+cd "$worktree" &&
+
+if grep -q "^diff --git " "$1"
+then
+	validate_patch "$1"
+else
+	validate_cover_letter "$1"
+fi &&
+
+if test "$GIT_SENDEMAIL_FILE_COUNTER" = "$GIT_SENDEMAIL_FILE_TOTAL"
+then
+	git config --unset-all sendemail.validateWorktree &&
+	trap 'git worktree remove -ff "$worktree"' EXIT &&
+	validate_series
+fi
+#!/bin/sh
+#
+# An example hook script to block unannotated tags from entering.
+# Called by "git receive-pack" with arguments: refname sha1-old sha1-new
+#
+# To enable this hook, rename this file to "update".
+#
+# Config
+# ------
+# hooks.allowunannotated
+#   This boolean sets whether unannotated tags will be allowed into the
+#   repository.  By default they won't be.
+# hooks.allowdeletetag
+#   This boolean sets whether deleting tags will be allowed in the
+#   repository.  By default they won't be.
+# hooks.allowmodifytag
+#   This boolean sets whether a tag may be modified after creation. By default
+#   it won't be.
+# hooks.allowdeletebranch
+#   This boolean sets whether deleting branches will be allowed in the
+#   repository.  By default they won't be.
+# hooks.denycreatebranch
+#   This boolean sets whether remotely creating branches will be denied
+#   in the repository.  By default this is allowed.
+#
+
+# --- Command line
+refname="$1"
+oldrev="$2"
+newrev="$3"
+
+# --- Safety check
+if [ -z "$GIT_DIR" ]; then
+	echo "Don't run this script from the command line." >&2
+	echo " (if you want, you could supply GIT_DIR then run" >&2
+	echo "  $0 <ref> <oldrev> <newrev>)" >&2
+	exit 1
+fi
+
+if [ -z "$refname" -o -z "$oldrev" -o -z "$newrev" ]; then
+	echo "usage: $0 <ref> <oldrev> <newrev>" >&2
+	exit 1
+fi
+
+# --- Config
+allowunannotated=$(git config --type=bool hooks.allowunannotated)
+allowdeletebranch=$(git config --type=bool hooks.allowdeletebranch)
+denycreatebranch=$(git config --type=bool hooks.denycreatebranch)
+allowdeletetag=$(git config --type=bool hooks.allowdeletetag)
+allowmodifytag=$(git config --type=bool hooks.allowmodifytag)
+
+# check for no description
+projectdesc=$(sed -e '1q' "$GIT_DIR/description")
+case "$projectdesc" in
+"Unnamed repository"* | "")
+	echo "*** Project description file hasn't been set" >&2
+	exit 1
+	;;
+esac
+
+# --- Check types
+# if $newrev is 0000...0000, it's a commit to delete a ref.
+zero=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+if [ "$newrev" = "$zero" ]; then
+	newrev_type=delete
+else
+	newrev_type=$(git cat-file -t $newrev)
+fi
+
+case "$refname","$newrev_type" in
+	refs/tags/*,commit)
+		# un-annotated tag
+		short_refname=${refname##refs/tags/}
+		if [ "$allowunannotated" != "true" ]; then
+			echo "*** The un-annotated tag, $short_refname, is not allowed in this repository" >&2
+			echo "*** Use 'git tag [ -a | -s ]' for tags you want to propagate." >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,delete)
+		# delete tag
+		if [ "$allowdeletetag" != "true" ]; then
+			echo "*** Deleting a tag is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/tags/*,tag)
+		# annotated tag
+		if [ "$allowmodifytag" != "true" ] && git rev-parse $refname > /dev/null 2>&1
+		then
+			echo "*** Tag '$refname' already exists." >&2
+			echo "*** Modifying a tag is not allowed in this repository." >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,commit)
+		# branch
+		if [ "$oldrev" = "$zero" -a "$denycreatebranch" = "true" ]; then
+			echo "*** Creating a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/heads/*,delete)
+		# delete branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	refs/remotes/*,commit)
+		# tracking branch
+		;;
+	refs/remotes/*,delete)
+		# delete tracking branch
+		if [ "$allowdeletebranch" != "true" ]; then
+			echo "*** Deleting a tracking branch is not allowed in this repository" >&2
+			exit 1
+		fi
+		;;
+	*)
+		# Anything else (is there anything else?)
+		echo "*** Update hook: unknown type of update to ref $refname of type $newrev_type" >&2
+		exit 1
+		;;
+esac
+
+# --- Finished
+exit 0
+DIRC      eÔd\(+ÁheÔd\(+Áh          ¤           ÊNç¦I@¥Xçã"3úğa@HWa• .env      eÔdN4úÀeÔdN4úÀ          ¤           ÌñÁìœ\’E|kE.ÏÁÓbcd 
+.gitignore        eÔd\(+ÁheÔd\(+Áh          ¤          ’´-R'ÄÕ¿’ÄÌEÛ³‘N1ó .vscode/launch.json       eÔdü,L¡eÕÜ¥c¶˜          ¤          ôë¸Üºü6µŠ=:ÜÓ«¨QùgY #Controller/getFeedbackController.go       eÔd\(+ÁheÕà!.-Ä          ¤          t!èÕŞtÜµ˜a‘«¶\• $Controller/postFeedbackController.go      eÔdN4úÀeÔdN4úÀ          ¤          Ù¤Fª¹Ğ¬†%µ>=øÚfvÄX 	README.md eÔe8´´eÔ¸_ÒÈ°          ¤          9–ËE< ¸Ü N©gkMôXˆÖü #Repository/getFeedbackRepository.go       eÔd\(ÙÖ@eÕéÖ:ÂL          ¤          < )¿!ÍèÏ§‰s²ìºJ¹½R´ $Repository/postFeedbackRepository.go      eÔe8õ eÕÛ³éA¬          ¤          :øh€3&Òå/I!H—Ê[N³­ Service/getFeedbackService.go     eÔd\(ÙÖ@eÕßÆÒ"          ¤           ÌÏ;-­Æı)ÅR“áòë—u Service/postFeedbackService.go    eÔd\(ÙÖ@eÔ¢/¨L          ¤          qø”Ú°~0­p@*†Õ,í™ú•8$  circuitbreaker/circuitBreaker.go  eÔea;lleÔ $9%d          ¤          
+ÙÀÎ0ÄJÒ[¨Mì‚şf¦@`©v dto/getFeedbackDto.go     eÔd\(ÙÖ@eÔi^Ã          ¤          u/Ú*u"Ó¹¾Z‘õ:AœÁ3 dto/postFeedbackDto.go    eÔd\(ÙÖ@eÔp2 Íò8          ¤          ÕŒêåã:µworòÎ0ƒuBNaf go.mod    eÔd\(ÙÖ@eÔp1 fŒL          ¤          ,`ñ‡ºZ rlÚÕ&ğôŠï˜i¥ go.sum    eÔd\(ÙÖ@eÔd\(ÙÖ@          ¤          	ükI‹(K„ôX—”ÁWyW©k logger/Logger.go  eÔd\(ÙÖ@eÔ³î'!          ¤          ³ÀFÄ'¹ëıÌ£ûA¬‡“2ñø main.go   eÔd\) H eÔd\) H           ¤          ¯¼ğYd–ÀËFôáü¹}Ìg”…äê mmerror/appError.go       eÔd\) H eÔd\) H           ¤          |_2¬”_-ˆ>ˆÿ¬Êl9X mongoconnect/mongoconnect.go      TREE  G 19 9
+õ€”äüî2_{Ê5ê‡,¼dto 2 0
+—¼EB…[xÇ.Âl¼«YRÄşlogger 1 0
+á“0Ìğ”•(ÕÇßİ&XÁ£€.vscode 1 0
+D¹¬0ÿäEldWÚ71G
+Service 2 0
+;e]uZüâN2ŒÈNgpääiÖŒmmerror 1 0
+8ø§¢ïşÒ”ÆßßÂ	ÉController 2 0
+^vÆ˜oO¯Üä&leª|†Repository 2 0
+ÁG¨Ùö£:,ÏĞc›¸Á	Ûƒımongoconnect 1 0
+ŞìäğxKH8†»7±~4……circuitbreaker 1 0
+±ë y´Õå ÎÄ/f›üÛÕÏõÜ?üôtñ¸hÆ9|‡İÎˆó=# git ls-files --others --exclude-from=.git/info/exclude
+# Lines that start with '#' are comments.
+# For a project mostly in C, the following would be a good set of
+# exclude patterns (uncomment them if you want to use them):
+# *.[oa]
+# *~
+0000000000000000000000000000000000000000 abf5d8d9393a96a55ab32dbe81c55881d6233d8f sheshathri.m <sheshathri.m@avasoft.com> 1708418126 +0530	clone: from https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f 260a1854e22054bf5470db71102984334625131f sheshathri.m <sheshathri.m@avasoft.com> 1708418140 +0530	checkout: moving from master to local
+260a1854e22054bf5470db71102984334625131f 593c4e983571729e818e92feb1d2fff3da61db23 sheshathri.m <sheshathri.m@avasoft.com> 1708454390 +0530	commit: included the circuit breaker
+593c4e983571729e818e92feb1d2fff3da61db23 ff204448f1891cc0dc74af523a17f48078a5fa8c sheshathri.m <sheshathri.m@avasoft.com> 1708519686 +0530	commit: pseudo code mapping
+0000000000000000000000000000000000000000 260a1854e22054bf5470db71102984334625131f sheshathri.m <sheshathri.m@avasoft.com> 1708418140 +0530	branch: Created from origin/local
+260a1854e22054bf5470db71102984334625131f 593c4e983571729e818e92feb1d2fff3da61db23 sheshathri.m <sheshathri.m@avasoft.com> 1708454390 +0530	commit: included the circuit breaker
+593c4e983571729e818e92feb1d2fff3da61db23 ff204448f1891cc0dc74af523a17f48078a5fa8c sheshathri.m <sheshathri.m@avasoft.com> 1708519686 +0530	commit: pseudo code mapping
+0000000000000000000000000000000000000000 abf5d8d9393a96a55ab32dbe81c55881d6233d8f sheshathri.m <sheshathri.m@avasoft.com> 1708418126 +0530	clone: from https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+0000000000000000000000000000000000000000 abf5d8d9393a96a55ab32dbe81c55881d6233d8f sheshathri.m <sheshathri.m@avasoft.com> 1708418126 +0530	clone: from https://avaazuredevops.avasoft.com/tfs/Integration/MuleMigration/_git/MM-GO-FEEDBACK
+260a1854e22054bf5470db71102984334625131f 593c4e983571729e818e92feb1d2fff3da61db23 sheshathri.m <sheshathri.m@avasoft.com> 1708454399 +0530	update by push
+593c4e983571729e818e92feb1d2fff3da61db23 ff204448f1891cc0dc74af523a17f48078a5fa8c sheshathri.m <sheshathri.m@avasoft.com> 1708519694 +0530	update by push
+xuRMkÛ@íÕÿ‡\êƒ%úm ”4	©!m…zXI#këÕ˜ÙµšşúÎ®ì¤…ö ƒfß›yïÍT*x÷öÍ³XûÀÔÄ:Xò°˜ßİ\ÜœÂ•İ#8€ıA-<Pd˜~`
+¸Æ ¡³¢¿©şœ±^‹T%6 Î•ô×d`…õÍD~l·˜/æ'p…!X¿…M0°y”mƒY”Æ·lĞ¬ª¦ô>€Ñ¾½O=T’J±4z	Øêzš{­l¨Û©(†ÓÅüE1[{Ñ’›«ÈEó—ÅlCm#48 oĞ×õåU1»6% £C#©öº˜İ®µĞ"+.•’ÇÑº&+½SüÑâJÍ¶ÒôÕ‚æ?BúA•áO.“7H¥Ğí¥¾ç¤û²UxìyyØHêDŠçC„©Eƒ{t4¤D“ÿú‘œföf‡Óºs°•F<ÍYç;€Ñx]?ze=i 9=¨54K¤»@Óô­uz	ªÀOidñ-9Gc‚ŞoÓ~õ(ßŸw!rZ–ÕRô¶f¼¨©/Ñ¯¢”æWd,U?R2$åÖ†2Æ•YM3?ì-ï3v5a—|;lÛ8!½[ÜéË`yZsËÔge•&3ş¥]b÷g›ÛâËå&Íø$T‡w±ÊCù‰z\fÆW+Ñ8=çØXR^óoŞç£Ír/)ñ‰|Ş™›ÿO{bMÈ$kù
+iY‘x­YÇ’ãH–œó|EßaLhµf{€"HB‚àZkEàëÈªŞ³«ª{fÚ,–™şDøó:YéüFÂö0î¢ŞùpËôìÁwÃË][ùãoü@ËŸyéıÁÿs"-ÊrMD£6Ìï%˜hÆŒØ¦g‹åCrk€‹PêÿùgÀğŠ8$tö°S'§óhD]vf´ºE&=XŒ&–©4éşÄ¿ê’{•ÙSØ”}áYéÚ™ßş6@0öñÉX0í+8¶cg$ë?fR‹ ”MöQÀï¥,m&$'æñ/7Ä£WSË÷¡‘ĞÆÆÃ÷.±GÎ$qÕŞ¤;¨M
+³á6³~ßñà7­íºÆ.ÚÌîÊæ3ê[¬[äĞslÅÉt¸ù˜? bN…%Ñ7ŒDåë¾Ÿ9‡w‚Ûş?²Iéå§`œ$µĞæ…†õj¼»’ñB	‚±\QÏ½nü*Ø`g±÷-ú]ˆ‹ej+»‹Ì_‡É`HD¸e(5Iø‘è	|…)q {>Â1ªÔêñªíáW­ùuœMZS#¤×GæK¦ŸXˆ£52h° ÍĞ„©ŠŞ©“‡_:Äß€ß>ä·ùÀ‘hMáÔ˜œ ğuñÍ-×1ŞK²=\÷r<X#h	sCWÎà>”è!BóÁ¥=
+P**ÀS%èÜ…ş)u"i®_ 3»Á¶°«jZgh9+ÕkØĞd’=o¤sË¯~Ì·¢MİqâÎb×Û­bC…\°?ÅÛĞ/'È•Ê^~ )äñÁ¡«f éh®K"6§Í‚Ùää+Í2ÌühçæÕJÿ@VšÄ ÿÖ1(ã¸¾…c%J‚Ğå
+f-	q|F<IÆÏ{¯|¡ùG¼ÍòtOvI.8œ†ü “>œrˆ$ÔÁPe__õ	Û÷±·ê+ş­ípE©5zİ#q P†ØK|™ãç¥ÄjF\3ÕŸ€??"¹AÛPÔÓåécJXoñìŞ÷”R+aåúìÛg(¢—L‡òhg™æık¥ø]1ô•1º{Œa³·Ì¨nÔ°1TÁ¢‘‚o—¨'[İ›¯Bl~=Ä_Ñ6) #Ô=W¦ÎU\HJÕ²çâ²İ«y<ÈÍ[¬¼7;)£rñÊÎ/†ouüœIÒ—e8h¢lA™7¢â_S‡²[Œ¬Á¸Ïr=B*ô–òğ64Læü^ÖPŒø †ó¼z.mdù`ìÒ§Mğ…02N=Öï£fvßVeÛ«P5~»l’e§’ßš®N…I´¸|ïy!ƒÕj?Ğ“Ä[’÷YuZê]¿OæÏQ7”‹Î±]ÿ.è½?âã«äB|ÅtŒ˜
+×6½ÎÂÄƒàÑŸÏÌ/½Ø[‹»ë›b¥‹}ckêôaè›(p=š…˜zGH^Y–6ÁCÊµ¤öòã{«~¸!ê/Pî/Yb±‚~˜Œ,Ï(²¯75¹±çlÿ:¾µ,/‹Î.ì ›Šl;»ûÜÒ‹:í&áå¥w°Ğãz”ë|n‰¸éy!P2D GyÒ-ÔºVğ¼RHÜ.21sÃ)Hy”ßgä?
+¸It”©ë©×Õà­è1¦ypÎ&*Ö½
+×÷´7Ÿ<Â“·cj¼[*÷g»ñÖxqd±³veItƒK’LË}d½t	®\­H¥´ô2lŸêİÂZ·àû€¶e1-0NãÛ©ÿi¾’§qCCŒ††ç%ŸÈªR¤æ
+.öÙ²ÜŸ «|ˆLï»í‡€¢O©ê8rP‡ˆIOEd1¹ÜÙiŸ§Ü…ÀË²GOç$}Q‘¶küÎ°t’E•–ô–ÿaŸZ4L÷@3z| 0é<wc_³÷¹(Q#Äı…—ò>íÿÛùmËzƒ?Ğ7d7ÍG|A!rãCtqçHê©9lÜğY ´ğ>‹‹˜ìED©ó>ü¦*Ëì{çÖ½$Ö®s !°:ô^ÄÎ1­4hM>¬!eÙlûcäz—ñmî	¼©4á°®Â4ãtÂ%É¹Ôà¤[¦änNÜ‰8Tç^(ÈâÚ÷q{yá.,ÁÊI½`±&Ÿ“öéLz’¿ô5>”‘C–T8Ufl¹“ĞÏ¸—näÔı9Ş†fÒT=S†º‡AW4ˆ’¥ü¾\Xq.gßÑG­vu\ãı÷ú~§Ùº¯,áoÛ~xàGœÅb,’´»Ær{íUÃñUóÒ<£QÄö§ 0Œéö¾¥~ ·!©é`+ÌºcàÙœDç¡‘V3)P¼‡UD9çšJ²ú~¼~Gíš¸ı_|ÉZOìÓ—ÈGPÑ3Ìts•l‹êfàÏ{˜Öˆ]/å¼Ğ§®|îû]êg˜ºùEìû£5Î$—kˆ£Ó	&:×ºïÌ<ß,Œ“öôILßËTö¹İ¤`•º-õÍé}ª)Ã0‰ (ŒB‹šúˆú8ŸWÂv¹-/ë˜… .F!^•·ëœRñt;ãD¤ìk¢—§wÏıïÆÚ¤×ÆGX§>» ½7´‡ñTŞEØ™q—Cl¢¸7=½:ÿ²‹&óÖ$×N,7:tƒKL†|"pâòĞå)şu½Ûhú
+§†)æ®¤_ŞÙBrëì¬—âb± ÎGÙ„àçï;¯Yo]Ÿãø}k^hj¤üĞÒËG|òŠ¬“êezÄaÎÚ¢L´ğ©yÔºlşsC÷>;²4Ë&}Â5G
+×°=èÁ¡=dĞ‰èª¡)¯²\Mü'Õè6SÕ•›Ó
+Q²¬Mjç"†úìÑ6²‰æ%jè
+rÎpiÇrŸ\¨øj¤¢IÕ•×¶GXåêWÑ¢Æq"wE;$Ó›hâ0$¬¦‰š7^$|òØƒğ&óRd°OG¤Z{âÀbéíw›ÕP¦&¦ŒŠmt1Ñ0õ ­f³y2ãå†Ñç\Ÿ`)XúK¬½c˜@‘Ãñ|Ò*=¹"3ÇuÈÙ½–¢ûÏûMë®Ù…#ÕO?¸-Æú²l/b±)?,Z°˜Â`z9^Jí(ÂÅaßCÇÁ6“NJDx3=¾«˜—TÏ4Vîãò?w
+üö¨ñÙ<íû*@Û€…ß½5šX]ÑòCîPÂØ÷]
+ß–~Æ9í®ëzÎœ’ÔgY r’Ë’Óş,Çˆ‹İÉlÁöW¡–.#±È„Ñ;¦|×q †·®%‡”JeÆ90pƒŸİŒ šC*4u­~Ú´ÆÛJ–ñÜ[MÆO³Z
+¸¨Ó2PJîl§<„ò–s6|hÑÙáÌ!%“T˜rËËMKìà[Æ!¨ Ê§ÓL9Ñ_ª
+÷­‚ØÒ)£àEáµkKï\œÚÄÒ^Jèøıôš{““.à½ŸTÉ=;û`<7,	Ê`¹Ê®ò»Më=Öÿç…ã;ŠZÜ*’°ÿ6ÿ}¬e!­ëhlûR³=²çh™+r›;vô¤§#LÏ„Uz½‚‘õ²ø#Òïì¿!¶uòôâpCèeŒ<ÈaÇ³m—²7õ¾éŠøÉ]n$¸CéxÔF]šÜ CôbjUÎ¸x‰‹Ñ§no„°6¡–ÓËØR0¹(Ì!i:p}bÛÚ^”Äõé‡&‹W¡5É±’T.i¾S3.»÷{Yxz¼ê_Ç{("`Bq&vû”K¢éÁ›¬ÊKU°rj"²0üŠcİrfÎô©q˜JUC[÷Dş¨=ï¡_2Ã—İìYN»íÙ0´-àßêû9ÄÉåÒÁ2²¤ãÁß’Uç7‹Ñ[_ŸVO²6k‘—UÍéù´KC>í½UĞIÈ[ÀiË›Ã¡Û‚ŸÛ«B']KÄÌ_8Wö¤8ù×‘şk]XKf‰Á;Ü ÃÜEp¶İJ–†–³¿ı#sëêöÃõªŞ#M)$°»¼‚ÕÍmOç¿>úıÚ¡Ö
+%gÆŠ$=¡A­˜@å²WŒQ“j<tä4õãy½mÿoëmğgé‚W­“îæ|]ŞúXe¨3_í‰¸9Ó3M½x×/Û^ŒGnúØ sÄ$Ü\•.XqàÎ„ÂI½[ÒªFœG=æ‚ùçxÛƒ%->Â{%oâŸì™\ıš‘JøÂkÂC®®”ù3¼å}şÛªûX|İF¯µN•1Ìñ…ôô;|C F6 ç@óC2šéŠ´I¦çëQª,J=İk+m¥C§{1
+ğ¸Ûk	‹ƒµ¤«Ö|[ßæŞZ±Üø6S½úèEd6A!.bë£åïß°¤ÊõË‚…0¿îb.;¼iáU`êrÍº"=‰d²ËÿP‡/ÁèUÍeQ-Ë¡© r˜¢àm0@ÜcÖ×ˆÇsìŠ'a05{D(ÀGÜœ.»òLïq`„?ßƒ-¯­KŒTñt0Š&%	µªÃ€Ç™:Ç¹¦9t?À˜>!Àr_øƒo{ùMS6ÛjÑ¹R|Y²;›¦pÅ Ò¶·Sxñ™ ©¶ %›Òı“K+RSFP³¬İ›Éµ–OÈùäÖ§»Ş(ÿÂ-ïE‹ƒp”ØÑØÎ"ı8†®ËQ C€z‘Q4ZOÇ;ï¿;ñå'Â=X3–š¯öë¯ÇÙÁ¿•Ö¿ ìşç.xeAKÄ@…=÷W„—¶¸—‚x‚xÓiÚ;3©“tW‘ıïÎŒ‡œC`ŞË÷’Øîn®¾+€¶…WAxŠÎÑ†ôQ‡&0¯
+‹ĞàŒj¤aU”æ—|à#ÆÜ~$<Áˆb#-Jxü$Q
+óî#x&Şdd“B„´‡½ê"}ÛÎÜx²‘…'m,ûv:9
+‡ö.WowÛ.‘©Ó’êê®¹nºz“UËa¢y%]’ù–T€|t~u03òdÖ`÷ğlìÁÌXØâë×Rü™/ZÄE3æ
+v±<¥İ¬úX"ÏÑøxC¡Iaeş9Õ÷ê\ı i?wvx½WYoã6î«õ+X¡XÈ+w³-\ä!±›®Qä@²Û>:F
+[‰ÔRTÖiàÿŞ’:ìØ9€Mı`IäÌpoÆ…ŒÙ‡Ÿ9ü®Š’¢˜‚JÖ\Kuïy¼¬¤Ò,ğF~"…†•öñ5Hc¤¦Zâ÷ÙÙoJ±~µ,A)©hGŠ\Î¥è!-£<Z6òJó §·ZW´¤y	¾‡/9×·M&²œæ2ã1¨©ı¿;œ2'Ú\†%ILãPª|jŞL¿CÚ¸–ÂÊy†hZ)^rLÏ‰4ò}oìyú¾v)k}êrÕ¹ÕZ5hôƒ7J
+B³¡/Bó±8Y¢KU%à­÷H[2ŞÒ¬¥¨AuÇ
+¾4Pk†q¯ìû˜ö³®$ROØ‰Ox\U&©ÆtVÖˆ„Ã×ÇŠiü´ªã}£z
+t£Ä‚ëˆKãu§C ØÁnÙ·0æĞôE<aæAP1ZmÂßAãúÜÄ({#õtß1Áòû¡÷¾y°´æ"'â‚'‘æR0+ÅïOBy­OPP¿î0£6æ²(0Hjf´ûµÀ¿TòoÜocå£Ôa° ñ¢'ÜÍü¹£$>ÌHğº–7×Å#:äF(ëÕ„%‘H  >WÂ¿0G?aÂÊFíÚ	Ö‡\ÉF¤ÁxÂ>üt@^î§¨H
+('
+İn-ºáé„R‡$¼ËÇğ"&ó—‹S%Ë°jQ’iK†13\OÄƒB$H¼›˜Ÿ¬*<RŞÀÏĞ·2-YŠ:§Àô-0r;ã)ËPv+r)E²â\ émÊCxéV;ÀıŒù?”‘NnQ“?£¢£Ú.ˆbä(Ğ¶[føÒo‘H»^¯'Èíİ1•ÅKOşø !6}?H–%ª¥2Î#ãèàmÜ…Çy® 4ì	~ë
+³{6R/Ô©,t/å$…jha2ÚH#ÅQmìá¼õn3Hù»HYP%ôYWÔœ7„è‘ID¹]>Çî`MAq‹®à9–l¦:³™|C Z¥0’nŸBâ\Hùg#bƒñ¯„ï7ğëHMá©[¶áeÿöÃa}ºY.Ş,ÚÄ¢éFD8›tYüTÆmÀĞ¢åMÒå…ÍåÆÕäËãdÙ
+/Í73ºıÛA…n"~nà<C×Ú­W€İ¦Éî¯é½éƒšgu-k=õÔÚ¶’¾²/¹~½¯5½L×ıÇUö®ZPVêğRá°XˆÀÿ´] dÑÖÔ9G$SaS@Ã¢i_TÚ¶êP­M‹s?§ù¦ß'ÂÍ¦­0Ú!B*›Ë^
+
+£Òæ¤\baEíÒ˜Ä´ÃĞ2"§#Ûó6w†´s‰7¡‘x›Öíñ\v²ô¶ûôs›¢Û4SÍ¹üŠC2ŸÉ”g|È=`n7{îMæe}ŒCà]ë?<ı=Ê¤$¸±ı÷3Ö^¼ú¡›ºO_ˆİ]k‚¦šĞîî½/ƒbŸ6ÜfJŞu§]R¤YŞî®î„wÃ+ÉÃµtSÏqªš1ºğ…nÁº~ÂìçÔ5ŞGqpºn|Ïš¢¸w—šÌãm¬C=¡Q¯ÿĞæ;x+)JMU040e040031QHO-qKMMIJLÎJ-È/Î,É/ªÔKÏg8íj³`‡À¿•r²éÙ¾_":®ıê*Ã¡iõÛ×uÇ„læb¼sQ»k% !•+œx+)JMU0±4c040031QĞKÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJN11 çü¼’¢üœœÔ"†šĞÄ“æ‡œ}Œ.G\|»4¦eù5›2¨QA®.¾®z¹)<KÜVí¼0oM›êV;Û·Ò$ËD@L
+J-È/Î,É/ªdØ}]Å(ùógåòeÕ¯MaJø‘>‰¢(8µ¨,39•aá…óß-{Ë|Àæ–VÅ¢Œ„Õ·r!*’3‹’K3K’ŠR³:5Ó¤#·üûKïdİuZ ^•ÎQ˜R’Ï ïù·®ƒµÁM¡Ë'ı­“öÙ=³¤Cœ¯—›ŸÂpóÏÒxƒEò'J¼ÏäÛÅOhVá-¸PQ\šË°ÕšåÜn÷—†ŸUÂâä6îo1û±!'?=è„¿÷nÙÜßq˜;¿xÕœ4Qñ#·Ä¡Fä&fæé¥ç3èæÎTIû±tkÌî›˜¶.>“1#77µ¨(¿ˆaÙÑ¬7—›e½Å8kDqíæWğªÈÏKÏOÎÏËKM.aèian8+”mñúªÈšµNVÛøÏå•B”å¤æ%f24ÆÜ)ıà”Ã…;Â…y½´ıA ºËşxÍWİsã4ç5ş+„‡¹q:©rm9`Âô¡—PÈ@?¦¥ğ˜qìµ+p$Ÿ,÷R:ùßÙ•%ÛiÓÂ…Á/¶¥İÕ~üöCËB-ÙÑ×_~VÆÉïqì
+JU	£ô}ˆU©´aQ0%¬MˆŸ@ºDêqjşŸ}§5ëVW+ĞZiÚQ2WS%%$¦O@Ë(–I3¾5¦¤o#Vø‘+¾"ºtÉ•ÎÇö{?ÕâôxY)ù·ˆÆ¥+a‰d¿$ÒÊƒa˜ûØ¥ªÌ©3³s«Œ®Ñ”‡`¤a}¹ı™½Ÿ££t'l‘6gÂÓ¬¹¬@·ÇE>ÔP†ŞåWÍ÷E{ôKj]AU*ä±=ëy~R– ¥‡t^VË„ÃÇİDéòe•‡ÏYj*ç×`~‚;(¢Ãa0Ğ`j-Ÿáxh<4aérÓ*i¶·[³!{-/ Gƒúd¶1û"tN™æFü{0¸>µŒĞ‘utŸ3)
+
+Š5×ú5
+í‹å`Œ9"‰P’5RÂî$”çı‚‚ºõ`€ÁøÌ™ª¢@ğ“ÔÌjÉ»µ(¼Ôê7Ü÷¬ì¢ì‘2‹¢#ß-â¦¥$>L¡XŠ?¬Òÿn®‹'tÈh7ëKb™@A|®ğ_…¹ıVÕ&òkï±0äZÕ2†#vôv2qƒû)*’BÚ‰Bç7-D:bĞ„©ÍX~±$Ìg§Z­~€µÏN–ÍI˜^ˆ)t+&MÚ`’ÜHX—x¤6ÂQ˜¡c!eF±N™[`äs&R–¡ìÖäO
+æx|9]œ_,øá;¶Ïºß£·¸[Š
+!üe‹¿t+®‡‡á~ÂÂ/V±InQÍ_â¢†	£ÊÆgD1pè›'Û>t[¤%Òn6›r»W{LÙ ª#zP"[‡ô$’İI­+¥Û€ÑÁ!ÉOò\CxŞ;„€×ãiF!Yè^JZ
+dßÂ6 ´‘Æ&^ÆøÈ:Z;ù´PÕn3Hù»X7 ñå™ĞÙ¸£jÑ¾%È¬?™Â$h–Ï±«F˜`C[uÜâÌÂ/zCÎupsn¢ôk³ÑğÛ×Nç»)ÚºSy'õğ~°ÿ/{èÿïÀÏûµk1Ÿık™à3³§…ŒqniÓø¥”9ŞÂa•ÿG¾`Ìm¾<M–G¡'Ğ£õvBA¯¿ÜQè§¡İ ¶Õ>_Öwbº>,÷ÔS[l»réûÒ!ñ¿nL®k÷zÓa¿9ı]>mÑÚÙ…Şí3ß‘¾ÁÚ¤í¤h;¯NNE?XP£ñZÏ&Ì=î4²¾Û?G€;
+7 rÇI;DH•oŞIAaT½œ„I;€4¢Ğÿ[)ëÅxİ®pX‘9éÏÛŞ¡#ıÊTá¥C$~LëvˆxªRúû®{zú¹ÍÙnÚ¹å\}Ä1™ÏT*2Ñçî1ûÍ{›y^à°wçı‡§ Lê¥‹»)±ı 2²Ìİ9ºé7sñ…ÜİƒFh1İÀuÒNZo,úTä	{!±e ÄG«][”]~Ü1İ	o<Îü%åáÚÄ¦®¦8KMİñ¸[hb1bÍïTŞ=q º®üÎê¢¸w7šÇ°GûPóp3¢ï£3Ú4x•RİNÂ0öv}Šã®6ÔNH$áF£	‰" 0Î–Æ¹Î¶Ã…w÷t?01ñf[›ï|gëD®a8x¸ÊVáç*FX ÚŠ_™T<æ¸¨”TÚeÂLja¤Ú!nÖ4Ì—„8^oŒt™Ï˜Ùe3©Ík=P+€6*-¹ymÙ'lÆóDÂ5ÏDjPE«-W{ÖSø£6@^ø¼úöÁëØ£ÅÍQg2ÕxeBßÊDyÂÚ<µÑeòOŸşÅ cN"c¾@ó†[L¼o3›\¥—ğ…••:{ë(`ö¼œ~,»¼ûw‡Cï¾2ëiè\p{êå¿UP•ÌÉÎ;‚Ñ4·şø„zS‡6ô,·ıAËmÈÙ¢áz©Hì²ÊZ^ìßå¹åb4F¤q™Õ~À…;ÉßQkúII¥éˆêíiN[óNQÔ^<ÍBcTí/ktĞx•UÛNÛ@í«÷+¦~@v”¬¡"åPª"5€JÕ>TrÖ“°Åñºë5)ŠòïõúRBÛHQìİ¹œ9sf2MÕNŞ¿ÊcqÏÎTf´JSÔŒÉE®´€y>fB%2›G?
+•ùÌ+P?HàÏ“)ùF7î„îº³Ä(zŸL>ªùõ†qZT¶c24Ñ1¹Ïèe.Í]9åB-"ÊöÍÕTc|Úg!c±ò‡^—»ğŒ™ÇáZæ}ª+
+£Ka`ÕA¯KàÃ˜ª¨‹¸`˜BõéµÉù™Ô¢”fì°°õVBëß%¼ ™Ô³˜H¢¤MKU°[*ÿ„E®²¿jI–}ĞĞ«Ï–X˜yÕMc¶Ë­0±)‹3• MÙ‡$6q—|µ-ÒY™	¸Äå&lĞ´ó%Nú@œì¤#ÜE<¯Ñ”:Ûa°ªs¡~°y†ô][ÜQ×g·—W·üàĞUè=_ÆS»øÚ¦Ù¶ÇjªQ2j©7UHVğœ˜{‡4¨ÍÇ*y¹{ö7jWµX™‡ZÃpTE³p¿Ä©¤Ö`°á g`­^ “©Åá	¾Õó>îï÷aÏ‚²a5¬nÚ¶‰;˜`QĞÁÇ	Ôeø$¯nóˆVz.Ê”ÄRs~î°
+.¦üüŠÒâ$É!­Wë¾…«tXA­»*ø¶h*wURÂ'ÜÀ mêÑ>óˆ…/“qdÉè¬9W:·Ë›-¿Ö„<ÍW*Y<Ãí®1hÆ„¶K_[Íy~ÿ:Dó–üÆVP!?M’À·Óˆ™|¦%æ÷Áó<•"6RenéR>7hÿTj÷ äÁišªåàJË¹Ìlˆÿ¯>4w*)şÏÉáoş„÷o%UœÖ\tÔrUšj€hŸ9‘´Š‡ÑH	•­ÕqşV<ıC}ßĞëÊï¦Ä§Ó rÜM=.ti×æÚG3òçöO:´¹{(™]§¿³1jex¥]jÃ0„û¬Sì{ÀÈú”Ò@/²–VqB-yóWÎ2oß°ÌÎ¤¶mwÔw"pÊÌiF½8R$ãj]æ(&eu!ZäƒØ©2ø$­’!+•³¤CĞfÈ/Å`(}rˆ•Àƒ×ÖáÚG~î•ö>ñ¤ü‚iÿÆ'î­ğ”Úö³—#*Fá"­–b¸£)Ó;âš3eHXıB}R«|îÀšá¨çAã„W‚­Õ[Û¹‹äÈ\Lx]QËnÂ0ì5ş
+ËäHUBH©‡¶õPZıÇY«9NBü{×pÄÑ;ÏìÚt6ŸßµB~‰
+h#”!D5­ur’0>¯½oI¤5ŞY­ÁQÖÚÎ¯ ÊuùË@–Ä”·îï†µ½ÈêÀ}+	7”İyŠøÚšÊ¢¯éoHM€0K€Áˆ•òu_dÒ6yeÒZäMÿËHJÈ¾7òÔ‰§ô@’¥ğ¢ĞÅ#ÿËçÃ‘$1f`Å6Ù;ü\GŸ\<S’ñƒnè7(ŸD5jâî‚k++#‡Oì–8Û{¼Ê°nàoO®g({¦Ô°Â%p–‡“í‡“±{M³Íè˜i¶_Û²ãló±ûdhÎŸ½©Îƒy2e œi+…®Q¸˜M§èwş2%GòÌíÎ³x­YG“êè’õüŠŞ+(y7³@2€Aìä½wH¿şIu»gDuİÛıLDEEQ‹“'İÉÌ'+ßH˜Dÿ+Œ»¨w>Ü2={ğİ0Ãr×VşøÛ ÀĞòñ#/½ß"øÎ¤EY®‰(qÔ†¹Q‚ù€fû1Ûô¢`±tJî­ ¸ø	¥ş÷¿ÿ
+^‡„NÀvêb`ùà|õ¨Ë.{µnQ IO–£‰ej:Mºñ?@uñ½Êì)lÊ¾ğÀ¬tíÌo ûødÌ›öÛ1‰³@”43©F Ê$‡(àâ –6ã“óşñ/7Ä£WSKÆĞˆ¨cãá—8 ’8ƒJoÒÔ&…Yá6³~ßñà7­íºÆ.ÚÌîÊæÓê‡Œ[äĞsl“é°³? ÚŸK¤ï‰J·C?³ç÷Ã¿jeãÒËO-@?‹Jÿ Í+kÕx?!†œqBé	‚1lQÏƒ¦ÿÊØ`g±÷Ãú]
+ˆ‹¥j+»‹Ì_‹Iß“åË/j’ğ££Çs&Ç€¸Ç¨R­G#TÚÓ¯Rók;·¦†OoÌ€k¦—Xˆ£6¨3: ÍĞ„©‚Ô™Ã/™Êì"ÛÂ®ªiMÊR\+ı[ØĞh’=§§sÏo~ÌµG›º'Ç‰½»Şnes*äŠı%Ş†&øx9A.‡TöòQ&…‹Œ’¤£º.‰Ø¬:óf“_‘ÛØ2ÌühçæÕJÿ@VšÄ ÿŞíÑ½ãú•(	B×¨›µÈÇññD	¿\íƒü—xšåiäÈG$\p8¸ “>œrä‰$ÔÀPa^üØ&Î2Ìû×*X¿×·Ö3Fw1l–Õ6ºÂ[4ÒSğıõd«yóÍ¯%÷mCq/´€íùúªåòÔ¹²‰©Rö,A(Ó=±šÃƒÜ¼Çò{$“2*¯ìübXIâ?Nú’'õ(YPæÍÁQöo©C²Ù-ÆÖ ³T½¹üŞ†f€I\ƒeÅˆª8Ç)—ÒFæ™Æ.}ÚWğãŞ©Çú½ÒÌîÛªl;pm«Æoİ[& ù­iW§ÂDšO\®7úSçA^¸Çj¥èIä,Q„û¬:/ñ®ßÓşsÔå¢sl×7x­WãG<`\•\	‚«öİş˜ò·6½ÍüÄ à¿'?óK/öÖàîú¦Xéb?Øš}yú~äÙÍBÌ=a$¯,Kxƒà!æjR{¹ğªo7Dáå²ñ’D›!(ñàà†¹ÁÈò‚"ğvW’;sÉ/á-eyYtvaÙT`ÛÙİçLYZ‡@0	/¿Pz;í9®G¹Î§¦ÅMÏñœ!<8ò“n¡Öµ‚çÂ@â~•ˆ™¥ö¬Œ”‚ô^#ÿ’Á££DİÎ½&+:gE1ÍƒK6Q±æU¸Æ»çƒùä¼©ş>˜«ÜŸíÆ[3âÅAÅÎš•ÅÑµ†09RÓ­dNt³®ã]¿–¬lª8ÃÏB
+pötö·÷ú)è†p,H2-‘õÒD¸rÕ"Ó:ĞÊ°uB2|*†…µ*g=Á÷ªoËbZ`œÆ·SÿsFâ?Èz*;Ô9tÅhhx^ó‰¬*>Ej¶`cŸ)ËÃ°ÊÇÑb€é]Ş¿Ü}ŠUÇ’‡“2DÌLz
+"“«ÁÌHû<ç.^—Qr¾$ùë‹4µ]ãwnÔ€¥“,R··İìtH-&„ĞŒÈûÔ /İØ×Œ17<uT‰ãáŒüK~o¡ÿƒíü¶‹ƒe Áè²Œ›ÂDs¼Gv|]Üy¢rî‚Së†>€æßkş;dê[uW 7ê*CùIÏ¬W şóÙåøtıHÅ'ÿnÜn®¾µÑO 7Ñmg0Ë-áòà@Ø«¹\L’ZšˆZ„­ï'‚ûÈî#Á¾|C~yá.,ÁÊI½ Ù”ì½'¹kQãCYÔiI™UÀŒ"wâû÷²Áœb ÷>øoC3iª~_†š‡AW4'ˆ’Ä\ _.,;×‹ïh£Z»®rş{L‡mİÆÎW–ğ™|8=pg°‹DÕPö ¾j8¾©~Bš4Š˜ş º>İßÇİ7p’ª¶ü¬9:>AÍŠ”~y*i5“ÅXAäKÎ¢©()ï-õj×ÄE¸’e{X%à3óI •½Àûn®¡’iQÍÌüi„iØõÎ+}îÊ'á¾Ÿ?ÃÜĞÍ¯Ç¾¬q&Ù\EN°£s«ûÎ¼Ã³`aœÔ°§MÇô]]¦²Ïí&«Ôm©ûØ§,S0“‚Â(´È²ø¨ãñy	µË‘P¼,!\
+N{™xUŞß[—”Š§û'"ùP½4½¯šÿ¬­{Íi|„yî³+Ğ{C{Ï¥q„­ãşJRˆM´€{ÓÓ«ó/&û¸X`2ourÍÄrÈ \bÒ¥3×€Gq¯›a£é+œš}1w%ıšğÎæ;]kg½‹e—q>Ê&?ÿŞyÍzl|–ãïã÷JS#å‡–šX>úà’WdíP+Ó+x"NsÖe¢†OÕ£Ö©õ×˜ºÆì@ò’,›ô	×)\Å _x:‹öN'GWÑ	M	|mÈr]µ?©¾@·™ª®Ü$˜†PˆBeşR;¡0Ô‡`¶‘5/QB—o`…ğ=›†p,ñYÇùŠ€ozz4©ºòÚV€€ñ/¬!0D#0Œã0Dî Šv'H¦7ÖÃ0ªzT½ñ*â“Çœì€3÷/Y«ãééÈƒX«OXïŸZûc_k(GUSBmt5Ñ0õ µf³yîÇë£/¹v|‚}$c«Ä~§kC/d÷û@–ÂñrV+-¹!3ËvÈÅ½–¬ùOã®v·ìÊ’Êçb¹…\ß–‰E,ûç‹,Ûa0½´„R;ŠpqØ÷Âq°ÁäŒ“"ŞM†ó’ê™Æ²1.ÿs§À?aŸÍÓ6VÚ,üî-ÑÄº^-?äu Œ€}ß¥ğmègœUMÓòı™ Im–¤£@Nr½@RÚ_¤ñcw6[°ı•©%ËB,²aôÎ‡)ßu‡ámsH®”ı8:®s³›ÑÄQsH…¦¦ÖO›V¡­$	Ï½u±ø©WK uZ
+
+AÉã”‡PŞR`Î&€5º8¬9¤„0‰…)õ!°<XT°È¾¥Ÿ‚
+ |:Íä3ıµ Ú©pß"ˆ-™B0
+^´^³¶äÎÅ©-õ%‡şˆç×Üû8˜œ5ïı¤JŒìâƒñÜ0$t.ƒåà\åwëÖ»­ÿ÷Çwµ¬½4JÂş[aüû¶–´."cÛ—Úñ4óQØ#s‰–:°"·10ÁŸ?=Fîµ
+FÖuá;Òï[Ø¿Cl{ĞĞ’YCè¥Œ<ÈaÇ³m—²7ñ¾kWŠ¸É]NÜ¡4<j£.Mî !Z1µ
+«_½ÄÑ§no„°6¦–Ó†é¥l)˜Üæ4¸>±Mm/JâúôC•7¾5É±69Ò\§dlfô‰zœâğ_›ãİ0¡8;‚À}Ê%Q‚ôàWå5*X>7Yè~Å2nŠù~.ô¹qö•¢„¶æ9AûÚï¦_<Ã—ÙìYºİölÚğ?gê÷>ÄÉåÒÁR²¤ãÁÄ«Îo–Eo}#Zw’5Y‹¼¬j†ìHÏ§]òiï-‚NBŞVíÎ<éİ\¼÷ÙƒÂwâ­DÌü…³eOÚ‰“-é/¶Öµx†¼ƒĞÀ0Ì]g›­Äá`ñ`8a9‡[Ğ?r0·nnìÙ^ÑC#RåB»ë+X·¹mûtşëS¡ßO¥–)^¿è0V$éjÙ*—¼bŒbPHªñÔ‘ÓÔ—õlÿo»ÛàÏÒoj'æ|‹.#õiæª7z¦©çúeÛãŸã‘›<ö €Ä1	77ù…óV¸3!³bï–´¢gAĞb6˜·m,hñ>Èy÷Ü,0ryškú½XÂWV¨	¹Ü)¸QæÏğ–géO!»»É×lôVkTÀ_IO3à;ì%r š¢ùSOW¤«0õ¼Ü±²(ålÔVÚŠ§Nób>áqwPkQS¬ù®MEYf)ˆ^÷èEd6A!.bëÓâ_,¤ÂöË€?¿Œc.9œiáU`jRÍ¸,">‰d²Ëÿ‡/ÆèUÍeP-Ã¡© r˜¢à­1@xÜÛ¯ÏçØOBß×Œ€P€¸9]v)ä™Şã´çÿÔ [¯í–)ÇóI/š”$”ªß×9Î6-pÊ!ãrcúŒ Ë½ğ§½íå7MÙl£ECË×20…/CvgÓî¡DÚö¶
+Ÿ	šjZ´)Í?»´,6¥®5ÃØ½™ÜjéŒ\®An}n×åÿÆÜòğ´ìa;ÚñÛY¤ÇĞu8òdĞGA«!2ª‚Fí	B08ÿ%Ûi0àˆ/=öÁ˜±Ø|]¿ş¾Mü“nUiøñyÙl¿°±ÛÖoº^¯äÇ3ë«´ú³Á“¢FáWËl…Ô°nÈ¿Î†ä‡í	ÍCû\Lşî†6­>$È	Á9vÔ}øÔ­v~ŞÇ8ShS×G±çi%ëÃKù;üdçÙÇ€ş6,øƒfğ2rğ8ï—ÇøZ:õƒÛ	4,Şé(RòÜ¼”f=4ë|'Ùõ¾ûgCKÄú)%g’aùkİ<À˜°{#Ó™l„çë¹ğ!¿xıíÿ°x•’ÏN„0Æ½Ò§{‚ÕÔ‹ÙÃ&{1Ñ„ƒÆà`Òˆmm‹f³ÙwwZe1ñÂŸ2óûæû˜ªÓ¬×·¦¬ßÊáí§¬‘1ùn´õ²„£µÚ:Î‹F;éµİow5İÓ!Uœw^s–1æ÷áY;ÿ06Œ
+à¼ík‡'¶˜WzÎ¿8w$<rrÊ£mÊkŞ›ZüèÑy YD1<g®Âk¨+Ğ­^Ct˜™¦W5<á×œ3*Îè?çÌF‡¾·jéë!@7‘zœôS«…ÎñÿuGé°ä5z…ÍœÊ"'ÿvú7?ÌŒ%²	©Àå”ìB²I§[qV!åñ-z/U‡§Ë&p¸
+â£"íM´O 1j'(âô¼ŠÂ?+¤j
+äPÙé\x+)JMU01c040031Q(È/.qKMMIJLÎv)É×KÏgø’¥ó´Q–M›ÏÂ{õ%Ş4ÇäÄM Ô?"x•MsÓ0†¹Z¿Bø”0Ô™¸”é¡0ÓCÚN\]ÙRŒJ,I.“2ıï¬dÉ–“è¡­VÏ¾òîj‹,ğñr¹|Õò©¦F"ÄëF*ƒg(Y­>)…Ó5c´ E]3¥¤JQ’^³ÁŠ›ïm‘•²^Tò¨Ùm¥d+èâ‰l8%¦s¯dVKQIZdRU÷ûˆ*şÄÔ¢ĞR,Åkn`¢9BfÛ0|+µ¹Uò‘•æ³W€µQmiğo”\]âñ_OÈn
+{,ú$Í9}+ÎêÆlSüèŒœ¦(ñü6Mi:) ˆØ2°®IÍ:e –‹j¤Ò+
+'øîÒœp_5Sƒ. LKkÁ5Ò– ¹Qü™.…6­	òÒ»æ±°ı ‡ŒÜÚİ‘3º),üeCùäÊù†ûîš#è…„J³¼iµıi(<ë»GvÀ^(F£çÛ púK–k^ôuYÔ(ÛÙøıµÃA)‚¶È¨•¤|Í#YÓª6D›¼öş‘¶Ø{uÓâÆÄAbO¯ôYi›²¿Üt–¹Î‰ó·èÅ·ôûÙ2m¢6H}Ÿñ>9Üsş…a'©.W,niWíz˜ø¸S]7‘{ÔĞqşmé—‡Y»½ã?êÿµî:.Å[
+&×§K|Œßá÷øƒM\:iüşÕ<Ø‹ƒDŸ8dÓ>ĞwL7Rh¥ôŞÓêI]Ù„Ëu¯î°gUv«ÓÚŸ 1öô{àµÉ¸d†ğâÆo]/çt?^´¡¶vÍCP@ÿ=^ü¶ú<hq¹ío¸@ëV”næ}ë'›5Ø÷Ë¿q£8;k˜ÈRÙòONC-H•]³_3 	_c˜ÕÑËîİìœ5ónëõ)|cI‰b¦Uw1€pN¨ì¢ÍR0`[ Ğ»é%/(dædzÁèx­TMo1åºşÃªİ(q
+*BDê!)DôP¨‚³ã$†­½ØN£*ÊgœõfÓ4"qZïx>Ş¼yãii¦ğêâİÛ•?ÅAí­)K´Œ©»ÊXKRÔÒJÏû?œÑ)fw>|4úşÂûŠÎí½’ieœ#SJÙŸÔÖàûÈ^x“²œ1ÿP!ÜîE\í €óv)=¬ÛÜ±oFT"V¸f›ƒlá²ÍvJ{´3A)c“!€ÌVzà_ĞUF;ünyvÁB'Ú-Ñùœ%Û›ÆíT˜óÂ/İ•)0”ìB!¼h‹¯7y@:[j	ŸpÕÕÍ"ÿÔl~Š3jÍ¢_Z}Âa³ 6;4™„Î>--¤ÇÕNõ}HW ù^X˜E- Íœ8ŞrÉX”Ä‰÷HÒB›Y>2ÅCÎëÿì¬	#‘$h-.·	¾‰R£˜µ÷‰šAğxy	Z•¡l"ùÁ¨ºpq~Ş…³C=çõd7©¤tŸv¡6İ s´d‰"æ”&—DvYB3¤³[–4áOòÃ‘mÕõ¿¾9
+t,T‰x×$aZ[¿@GêùSì´ÀüÖ’@KÕ}PwGh{hká’TN)å€÷ã›õ×¡!²dÅ?¢ÒÈù°(²4µï}¥7ƒF•Šª*•^]¿KÔÁ^Ì}–¥¤Yö¢–{Ã²4«Şg«æJ‡ô¹17è¦pÿTãß=…÷¼–¶œF.ZêÂb4Kô!¼ÏÄÔ*çõ1¯Nxi~/©ıÛx+)JMU0¶d040031QH,(p-*Ê/ÒKÏgØó!2eÚÓn_şÙÉ\{&}Jë“W èÏx+)JMU°´d040031QHO-qKMMIJLÎN-*ËLNÕKÏgø!šÑ`¬vé©¾'³¢ûôSÑ~›×B5äcÓ¡pæ¼µî¼µ²ÇşješüğÓëé¥ ½j(åx+)JMU0¶d040031QÈI,ÍKÎĞË*ÎÏcß¢¤~äêşIGøÎ¸ŞÜ<ÑÏğ3 lIÏx•RMKÃ@õÚıcN›*ëE
+¹
++RAšNÂbÍÆÙM¥”şwg³ùj)‚—lfyóæ½7»Şš5<Ş?\ÕYş™•i§sBÕ†H1‹ÈÄŒ°6V;C{ˆ
+ÄÍš›îVÃ%#Æë3\/—¯¦,‘&øm{‰Xˆ]FÀ%Ì{˜
+h!Ü¾Fx7Ö½tc>‚.°šÜÁ!ˆQ‘š¢½¦TÏxXnÇ“‚®R‘åè¹¦½’ğ»Aë€¨UøAÎCikSY¼…6“Ø(š*‡7ü9SÊ4µùS_|Ñ «ñ‘$0dÂÜ!{×®¡êRçÁ\´ƒ.ia>5×Ù?ıÇœ–˜õ»oc€EVùá*åhhXYOËªuáƒë*½õ{êÙ¿+µ”èœ®ÊV?BÎÁïTK´–Ÿ'Sõ	0Q·«8!yŠâ½ôÀQ,·p0¿Ç1íx­RËNÃ0äÅ’S‚*ƒ8A¥€RT‰r€/pÓMˆpí`;EUÕgí<ÚŠÂ‰£×³³3³»z7×·gµÈ?D‰ğ†f]åÈXµªµq°(Fc´±1‹ÖÚVN›ÄârAM—¯C‘ûòÒizÏçÏº,Ñàe(Ä,el-ĞzoÁŒ¹Mğ„nÚéTu¦Él[)°×Ã;ğ=)ò‚flwÌâ?:–TÊ¡)D‰:ï¤ì'ÙÄàgƒÖà}5…äÂ¿¦ØZ+‹#ñ¤~`Ñ¨^ğë§rb­õ_zÓSvƒO×uâsëÇr7ÌNì	d ş‹”‹úH&Â‰àÆXîÕP\.ïC’´è¨*|Lpª¤O=¢½óGXI{_P½ÛßâÀí[éêBÔØem9eœŸ£µ¢Ä”E”¾"Q%½ ¯pØà¨¤M!Ëà*ø…6~Ñğ é@”ƒ©nÔ2îØ;ü!ûÈ»¡ğ¿[‚x+)JMU01e040031QHÎ,J.Í,q*JMÌN-ÒKÏgø´7HÛŒãaëÓÇóşğéÏ¸2á à©x+)JMU05`040031Q(È/.qKMMIJLÎN-*ËLNÕKÏgpç]dğ²ñãÁ…jN‘ÊŒ¹¶¦ÿt 2¦x¥ÁjÄ0D{öWø^X$K²½PÊşŠbË8´ÙÇé÷o½÷8oxSöm[§"os˜ùXkCbŒq©¤)c$h³RIÜ$4cÊ)˜ûÑaÏŒ ˜…-^šp‚º$D÷ÌDƒ aszÎ¾t;ºÎ>ÖÛæ?ş¦‡şê±·y+ûöé1Afaºƒ!pW{‰NûÇ„[Ÿåû¬VıìæË:Êy]_†é—÷1Qwx+)JMU040e040031QHO-qKMMIJLÎvÎÏ+)ÊÏÉI-ÒKÏgx½ãÎ®?f[»Dm­î\^½"ğgz$TOA~1MŠ/®Ş›P"qGd+ãŒÄ‰‚«·ÅL• ”º-0x+)JMU05²d040031QĞKÍ+c8å÷|™§ÃÒˆç•Œ}HtğOœ
+“OÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJN11 ½²âäü”T—kÿ?qÍa¯O	—»enèÎ%QáœŸWR”Ÿ““ZÄğÚÇĞo…ÁÆu{ÚÓôVşw¿œk¯µ,ÈÕÑÅ×U/7…g‰Ûªæ­iSİjgûãVšdÙ‘ˆIA©ùÅ™%ùE•k‹¯İ	·Ô|ø§Åğh\N×ò¿gs Š‚S‹Ê2“SÂ¿f˜%õ;h¦Ñïä]"ûrL(‡¨HÎ,J.Í,I*JMÌ:*PEŞ-OåzfQƒeI‹Æ×SSåc!
+SJò6dÌsÕı¹ƒëÍ™Ëº‡'¤w›Aœ¯—›ŸÂĞtW…ëí‰é¯.^Uz{J4WÂx„ŠâÒ\±—Ù%Oğ[rğöÂàY¢ó½¾±!'?=è„‡“™Î|˜R/9UãêñûwÕ".n€‘›˜™§—Ï°ŞÒ[×Òv{ÇÔ£‘Ïìw};%ò|:ÄŒÜÜÔ¢¢ü"‹||Ë½ÿÇ|iÊ±û÷±sò„ªÈÏKÏOÎÏËKM.a¸ÇôæÉ‡
+ïF‹¶İæëLZ[…y|çÙ'x½Ùnã6°¯ÖW°B±Wnvp‘‡ÄnºF‘Énûè)l%RKQY§ÿ½3$uØ±s ›úÁ’8÷=Œ³¿ü|ø]%ÿD90•¬¹–êŞóxYI¥YàüD
++íãkÆˆ=MµÄï³³ß”bıiY‚RRDŠ\Î¥è!#?:6üJó §·ZWt¤y	¾‡/9×·M&²œæ2ã1¨©ı¿{?-dN¸¹Kâ˜Æ¡TùÔ¼ÿ˜*~‡¸q-…åóÒ´R¼ä‰ciøûŞØóô}ìRÖúÔ9äªs«µjĞèo”„fC_„æcq²D—ª,JÀ[ïá¶d¼Å!^KQƒêÄ
+¾4Pk†q¯ìû˜ö³®$bOØ‰Ox\U&©Æ$+kDÂÎáëcÅƒ4~ZÕñ>‹Q=ºQbÂƒuÄŒ¥ñºÓ!Pì`·Çì[‹NóFhú"0ó T1ZmÂßAãùÜÄ({#õxß1ÁòûS-4î|ó`9hÍENÈO"Í¥`–‹ßKB~­OQî0£¶Œæ²(°ˆjf´û³À¿Tòo„·±ò‘kƒi° ñ¢GÜMü¹Ã$:¬Hğº–~7ÕÅ#<¤ÆTÖ«	»!×Â¿°<?a­ÊFíÙ	¶†\ÉF¤ÁxÂ>üt@Å^ÂSâBÊßğtÂ@©÷Ä¬+½ğ"&K—‹S%Ë°j<$+–HLá1TO„ıO(Û¾·U€9ÿYÀªB)šH~†n„”iÉRÔ1¦o‘’Œ§,CMØ-¬È{´ŠWPp¤·éá¥;¡4yxøîgÌÿ¡Œtr‹šüÌµ¡pA#‡xn‰áKrÎZ¯×¤vNLeS£G,hò¡‡dYÒ¨Z*ã<2o§Xxœç
+òHÃ`·Ş¡0ÛP±g#õò@Ú@qÁ2@÷RùQ¨†v!#@é(jhc—B†Aµv†óBÖ»Í åï"eS€z)eŸuEív1Ñ+4"“ïs”ËØô'pa’+xG%›©¥,E&ß  &­RI§8R½™àP
+Æ¿R~¿_w@jzLİ:°/ûÿr?¶¢›åâÍ
+¡-Ìa6İˆ×®ŠŸª˜£4´Ùò&åòŠÆæêãjêåq±l…—’Í7ëºıÛ¥<2İÌø¹IçºÖ‚^‘ìnÇ0ótOïMôt”ÕM?ìõ4>ûÔ¶ô•sÉæ}£éeºîœ?®³wıl0‚²R‡—
+÷ÂBş§íèRmİ(sÌdjl
+h/4ã‹ZÛÖnAªµi1cîçt!ßôpbè0ÜÚ2#!RÛ\ö\µ6ÇåbËj—ÆÄ¦İ{®pk9‰låmB†¸s‰—¡y×Ay® 'Yz‚Ûıú9à…è€f‹9—_q©Aâ3™òŒ©Ä-°§Ş$^ÖÇ¸ïİµşCé‡È“ŠàÆÎß#¬X{Çê÷;è>}!vO­	šjB»{ö¾,û²áF˜ixÔ>t‘æx{º:	ï†·‡ké¦ãV5ct·İuı„ÙÏ3¨k¼zââtİ$ø5EqïöÚÌ0ÇÛX‡şzB[9Ş ş4ãßAx­TQoÓ@æµ÷+¼H ´dÉÆ&*M‚®€öPØ&“œ›’»èré:MıïØwIW¶‰†T©9ßù³ıù³³Jgpx|ôîE“æ?Óa¡U¡OµR˜[!ÊºÑÆB(FA®•ÅµÄh±øhní'D™‘gR×hŒ6tØ²Æ@ĞG¡ãšÑdkS$î{_šr…Æøõ“İØR«6c!ìMÓ§8ŸQ>f™æåöëVŒ>£ıĞ4§U‰Ê†c'.n<Omš¥-F0qùÇôˆÊĞfì\.[4½ì_BkM©Š¿‚Ø±ìT_ğÚHİÿ|”’AÛ5Xn7‚ïVÂ‘ºÜÒ…G	eFY2uóÙş¹ ÙbNQ[˜@öÜŸBª5wÄD@íâKê5–›}¡}æ½gÜÇ¿üvÁ`#Î	ª\:”½PeÅA‡BéèˆÑf[¼»mCødÄ@LãòÏëÑÿgeÊs©Øâü©ş{]ê4çN¥(dëeıP÷LˆïÊW?a¬‡~ØbïyLªAx?"kÉ®#ÈS•cÅ¾ô‚7Dü½´W´tgÙËÙf´$
+£;%Ãq‡Ş1éR+IH—hz¨GTZó,Ä§^¨¡ëtÜgşdüÈÓt^*\7¤v”nøCƒØ	ä¾\oÈî Á„rwF,&	œÕM…5­°We,`ŞZ`5Ï·k‹iâyã[âR%I.óÔÙ†•Cü‚!é÷£k-¤ĞT´ô®t%‰2öV´„[”!t·®©	æ¶K+ -î“s³_H¯úxtïÆ}
+8Âeöº5«i’H\L)ÜtÑU¸(ã€^¾=8|s´·÷¾&k=X÷éu¼Rm}\Ûı¯Ğ&ADav6È‚ºç3¾¿[½~5²Vï2„^ãbn°mÄ/áßMux½WQoÛFŞ«ô+XaäÔ“dÅ0ØÍ N‚&}*U>¡’N;Ò©ÿûÈ»“,ÙN›nÀò;GòH~$?^–™XÂÉoG¿ÿ4Áÿ»æã \W¼1wÆG£“£ÑñøøWOÇp½pËˆ}ŠVX*Yª¥äÑ'.]7ÍK!ø®ã1Q(şEyøU¥9÷\×Y,ŞŠÕŠKğJQ©sÎã%Ş3Êô!*.¯å¶0Ï¹”BÒ5=£\+1EÁú@éJú,^B®Fúû/±Lï¹-+QĞßÒÑ;p]õPr˜™ÌÎLfs®¢4ƒJÉš)xt‹9tP+:ùH¾&^˜ÆC‘§Šç¥zğ>ºÎéõÅe”óÆhÇ *Ó°@ÒÕRòBİ¨H‘Á.3ò°"28ÇàjÉg¢.¤ú7¹²Ñ$F2R ƒ›š1^UOTF¾1¸ÄR*İKnñWã¡@yí€B#L"/wõuè!]CYä¥N±V<>{ ûÒ6òp©™¿®
+£½³ÚXyLømT©…ˆÓ$Õv ÍPæVÁzèÚ ›}ãç¢:e
+{Îµ[‰´
+#­€A­]÷>’`Ú›éÌhYlún_3îíÓN‡²,Å‚EgNıÇüì'S&ãÎi¥'v–‰ŠÇ6pú˜‚gÎptŞDYrUr¶6g(î‰¬-¡È¶ÚíäÕÈb¼ö¤íØşi3{ïˆˆ0(¬ÛãÚLä;^•+ßï›Ô67ÂŞdIóúúgµâ~Åå}Ê¸EÓCÖİ¡õ; ¿gCª²RpZ–ø!ä€0Kê‚Á%ÿÜ¯‹ÿÈpØ·¢èlL¡í¼Ü´?pÉU-8è>w0Ÿë¦Ÿ˜È2$ÅTp¨I-˜µ'6tŸ-·ÃÀD@Iú-ˆk„¥ó×pƒ/Š†ğ-`;fÛ—l£KhÄË! éÃd
+l˜ì‚?¹ÂÌtS&i¢u^L¡@bF+bpQ$Â÷Ş#!•ˆ6´.›§¯D»L´ÒG®ƒõt:˜¡W\!È|¯»‡]êÄ<Á5Fz6 `V8I´|»ù‚Û«ù•? õ$Í°)!ÚÁâÑké~ÒEBIÒ"Æuömİ‚s<½*x{÷.Î•D:}ßÜ?æœ6¶`hã_¡dİ5Š¾˜ìÎÀFs×n³'ê,nö¦¯9ôR|öÁi‚ø&Ò ³^Ğ#±"²…™öNó¸TukÑÛ‘Ó)Xöúúš;·5º‚ƒè6ĞíÓ8BHØÛ~ö-9LH-¯—gÌ©1ıàá¶³ï/ÀŞ|5ëËlä÷eŒë­ßL¤ß#¥¡Íü5­Ú\?¤VÇó5ğiz‘&A÷ğò%	6HueğœÃÆ²i“y#î‰{S>ÒÁ;ÿ)1=ƒˆÌ›¨ˆ3nãìRôv™AÏ„MšıD¦:*õ‹^­m©5Ÿ>Ç½-èBAZék‘4kX^î×§Y{9öY=`|M+ì}ŠRÏW<—WœZw_—‚~®¸ò&-#±Ş£r²oÎÖˆ{¸áæ;™´¾ÇOC0A zX6÷cìİá$½ìôŞ3.‹ïÌ™Åx`?©-~ L"(3y+ô}ÍõHº%ˆD²Y-ÿ‰£ëXíby¶ï™½H>9šm“æøı+h^Sø¼é¿—Y;'Oî{=­şÛâxVÛnÛFí+ùSÈ˜^É®j•‡4vjT¾Àv›Õ0(i%³Yr…åJnaèß{fwuµ	Œš=3sæÆ¡ÒC:éüĞùnVŒ¾SI}=JÇe5ÓÆRGÉ¤²	JOù¡şßÈ‰’#'o¬ézÁR¼–õÔ)Ø²’IÙ´´ó¡éªõ—~Ô­©k+Y?‹ãÉ¼Qªè­7›Œ¤J.¤"Húü’³ìB6ûWÖVšI1’ÏËœ
+3mH±%Ìè9Ê	yˆ¤„ƒ42ÒÎMGË8Z†ª é}£æ©´£Gª¨ÛÛ²(RûÏL:ØQÑHòÚ]À­î÷üˆÛ"·“´ònÁ«,Üwêx‘f÷^%n<…êXNŠ¹²¬°`¿âBÍåp¡Ã-Äoe=N3êmt€2Y—Ù0xÙˆóR‘MÅSZ,&Ï	Fm¨d{íŸğüğ—óê¬”
+& 9<ô¨l¹¤Ô?÷ÑròpÌ-£‚³@È›!š.,’øw 3Í„·Qfâ²¨$ËWç–ƒÙóxéMlhnÑ-I*¤Çq°QÙÎLrpÈ8"¿UÑ|½•uSÚr!¿h3nÒp‡\AÕkˆ¨Š¿/|ıôe=µÎğ/¼ºûz÷tH	PÑ„ÔW•ß£oà·Kc‹jÆÉàâR?1OÚT…M““öIç¨}rtò#¿ë¶;İö;æ@®IøÖ Ewïëó99¿<»B´É§Ó¿æ—Ó››«›d9pıpïn†Î*Ë×w¸ºƒ·ìN—Íıº7?Ãeäµù³†u ®_S ÛsGıš[$İt3gñò•!p^OtŠÒDäÿ¯ãÑæ˜sNşŞV._N™Or8Ÿ~ƒÇæ«&^Ú85F›o°áõºV«Ç˜µ}Y€=:n·ÛqÌãj.fï}gu³œ)Úœö¨Ô¶ˆ#V9Ë<•WX<JÂpñ“”Ü¿~¨»8zâ^¹Óè„ò['õR>A0XaÄs§Hc¸âV›@ôuyãúŒ¾ïQ]*×RH«8+l¡R@Âb2ê‘nÄgÉÛ$M`èÁ•]è‹óÚæôÀv/(q]˜FBÌ%ˆë9Ëé}°ÓGØ[ÄŠĞ‡B«åW
+Ğ szë±°Ãnâ3É<È×=b–¡;vlïû—‡=Ÿ›=±Ïälg¾®òœü*•Ò<0ÛÔ˜_®UQÿ¢›àš_ô¦ï’ÅCÔ…ØõÉ^‡œã`ËB—¶~à­üZ7ßJëò²·×İN]ígĞÊ»ïs¿ø,øïñv]œV–ã0 ¸ ÂÂÂº{ÈÛ,7Eo
+%¶ÂpU·à
+ˆ?kÄœ)|{¤;ç.ö’ä‰ı$+Y§e9ûú\ï` îX«ù	x­RMOÂ@õÚıcO-!Õ‹	!éE‰å ¿ ”)6¶İuv‹!„ÿîì¶…‰'O›÷Ş¼™u)×0y˜Ü¨4ûL·ïH»"C!ŠJI2PI]I{ğsÄÍšKïŞNA_xçğÆHş'É«Ün‘õ¥¸Ü3U…D’|
+±K	¸úş¨…ÂìÂšEGß©m¨ÉZ‘pVuÅ¬ÕJ]Šã%ŠMt(K(jƒ”§Z$îœ•eÏ¤Â¯µ-ê£!#û¿`ÑJÖÇ0J1š)Å¤ĞRçMÁ
+¿ÏÀøJş¥<¼6¸›Ø4T_I,âÔAOÜ¾Ré ÿwXvPx½MóÔ¤càıÂ4Y]l¡É>ú‚“»¼|¯È]émuQÚMx|‘ó0ğDä$+Ğí‰NÁwØ¶•oÔ™Á.&<öÜ–X=™UsÚàMZ”:„8†{G6„h7ÈûZÉ'ÉÇQ›NÆJBÖ`!›zã‡-U×<¤Û1Øÿ‘ä&	x¥»nÃ0E;û+¸D=lŠş
+%R‘Q8
+,¶ßºg¹À9ÃÁ-}ß7?ã‡ª€µ
+#gnA*IsÊ9ºR—\¢`‡HÓ“}p®IHÖ°^gN‰sğ’•°¤D„2û„êÄ?Öú£éhlíØ®;ÜşÓÿòèÕ®¥ïŸ€‹£\\
+n:íyÔôÄ_c{ÜÁšÂ³ƒª*¹|Cé¢cz–,V†x+)JMU05²d040031QĞKÍ+c8å÷|™§ÃÒˆç•Œ}HtğOœ
+“OÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJN11 ½²âäü”T—kÿ?qÍa¯O	—»enèÎ%QáœŸWR”Ÿ““ZÄP²Ìîùı}IÎ^ÿº¿¹Ğß™¯jY«£‹¯«^n
+Ï·U;/Ì[Ó¦ºÕÎöÇ­4É²#“‚Rò‹3Kò‹*ä\¾KeÄ˜Ç~µAñ>[cÓ'Iˆ¢àÔ¢²ÌäT†i¥]kúù”Ü«TÏ\ú‡ÿáùˆŠäÌ¢äÒÌ’¤¢ÔÄl £6¾V¨Ürõ©Â¹#úi³ÿÜ¾*$_¢0¥$Ÿaú~W§ÖèŠãz‡röH­æˆ:òêäô|½Üü†WO[m-Ï/útÎ ™µÔIÖ/1¡¢¸4—A'ácû®¨EÜ9·®ª}øÒõ~FæRˆ9ùéé@'<œÌdpæÃ”zÉ©Wß¿«qpqÔˆÜÄÌ<½ô|†nGÔw¾şËsfqı¼ßkÚ'}ü1#77µ¨(¿ˆÁâßòEïÿ1_šrìş}ÆCìœ¼'¡*òóÒó“óóòR“Kî1½yò¡Â»ÑÃ¢m·ùÆ:“ÖVa^ ×µÛx+)JMU01f040031QÈÍÏKÏOÎÏËKM.ÑKÏg¸şÃ7qZÖîÛó—O¬Ş×ëİ÷7 Ïø0x+)JMU040e040031QHO-qKMMIJLÎvÎÏ+)ÊÏÉI-ÒKÏgØÊõå|şá˜Ï_Hüp£uòœ½ŠíP=ùÅ84-]ûÈüÊİ,½ƒŸvoKœ¾bş)¿ó³ ı§1–x­•]OÛ0†wÿŠ³\ ¥.CÓ¤Uâl\°ItÚ®]ç´xvæ¸T¨êß9ÓP(l»‹?Î‡Ÿ÷µ3©ÜŞ¼{øªVú§š!œ:¼«*ôB˜›Úù ™HR´Ú•ÆÎ†?gS‘4èoFH§ˆå„b‡ãv†Öú¹28[ÃëêTäB„»á#†óØ„&ø¹°ìÓÇ22î?¡B±Î…Xmçâµ>×ĞOõHù(ş¸ªº’Mæ±©m¸-yGß½¡˜<şšc`?®®G¹HÖëİæl±;¸	*Ì›SW"·P@©‚ê›Y®rn|:·>ãb'‡¬ƒû‡ÓçO ¤³zsow¯/cÊÄÕ¦›LïYWúgx,Â­òĞÙå*"&‡ÈN!v—$.ì†tZ³—'®¼Ëe;›í=HB¦JĞ{§û¦*CĞ1{´-1Sà¯ÀšŠ[J†C¨ÜL^Ø©ËÒ‰*;íG¼—TO´Ü¾3Oo
+Øã¢gŞwÆX7µ;Ú‰Kl5CÊ|Bu"€”üDÉDBÎØîh:¯*°ê†£Š‡ğ6àÆ¨¼¾>7X•Ì¢ãÉÎ[‚ÉhyÏM[r¾aq¤¤w7 7¯ÅÿFÉ%_Pã…ˆğ³§:d…îé¯ßÓ†ß–ûoï9ùK$ù	;9—Çe™¥üB¡ƒ¯ô
+’¢©ªëÊhŒ³íÓJv¸3Æ¥ÇZ“uñqxn1øâÍÌXN±Ÿ>7æÃµ+›—µıo‚·÷¼#­™FıÉvíîüÿbˆÔ"—ígÆf½~#óCèx¥P[jÄ0ì·O¡ÿ…`ça[PJzY–›´M¼8öBo_wéú5Ì y Îû¾U˜´yªEPg1¥ˆVóh'ÁâbEÏÈèÉ‡…pôêFE
+–9ø…ñ£İ+PMJÁ¤nšcRÔêš\ËG;†·ís…gúeñA†ó•îtæTÎû§ı4£C„‹^&­ºÚ—VùO†º~õ ‰PW³0pá(öï™·Â­¿$¡ÏŞFG?—³ş¹r«·VÕÚ´cºx+)JMU05f040031Q(È/.qKMMIJLÎvÎÏ+)ÊÏÉI-ÒKÏg0|Ÿ’ÿµsÍ´Ò£/ş6iõ2Ûú$ ŒÅx­TQkÛ@ŞkîW¨†;sívİ(
+[š1úÖ–=Û>Åõfß™ó9k)ùï“îì4kËºÑA >İé“ôé“òZçpx|ôîE›?²a©U©OµRXX!ª¦ÕÆB(&A¡•ÅkˆÉrùÑVˆ2'¯´iĞmè&°Uƒ R'#É<Ñ¦Lİ÷¾4Õ?ğë'¥ºµ•V] "!ìM;¤·˜ŸQ.f•ÕöëVL>¡ıĞ¶§u…Ê†„S7Yd6Ë³c˜ºÜzD%h9—ËÍà#‡—ĞYS©ò¯ 6B¬zUÀgüéÈ£Àî1JÉ í-·AÏw+áH}aéÂ£„2§,™ºÅ<‚.ˆCvXPÔf'P¢=÷§j-11P»ø’zCMåF_hŸùà™ñ/¿Å0Úˆ³‘G‚ªVeïTUsĞ±P:º b²ÙïãnÛ>3“ã¸|ÀÂózôÿY…ò\*¶8ªÿ^—†#Æ¹Si#ÊÙzY?Ô=â»òÅOëa¶Ä;…I}C"ïGd-ÙëŠLX³/½àí|«ìÕ-İ[ör¶9-‰Òè^É0Šáğ`Ê["!]j%	Iâ
+Í õˆJ…äÔ5ôa‡ÌŸì€yšÎK…×-©¥şÆ ñ_Ü—ëïÙ$˜RînÂˆÅ4…³¦­±¡•öªê€Ì[¬æù#ãvm1M<o|K¼B¦$0ÉU‘9Û8` 2bÈ_0$ı¾÷…Úš–Ş•®%QÆŞŠ–pÇ‘rƒîVÂOjd…í³hƒûä\ÂÒ«¡İ»qŸp™¿îÌz–¦×3
+7[ö5.«Ò8 —oßíí½oÈÚŒÖ}z¬U××åvÿ+´iS˜2ƒ`§îÅœïïVãH¯_¬Õ»aĞ¸Ø…mñ=KËx+)JMU0µd040031Q(È/.qKMMIJLÎö/HÍsôtÎÏËKM.ÉÌÏÓKÏg8úÖ¢"{ë†¾2¾¼sCİ–ªu_i ÖxS]£ İ×ñWø8“ ´¶?Vä²€¦şû½ØİÄ±1ÙbôÜsÏJ²f-»ÿAMN×½ÖJŠn¨*5#œVUQÿlÔõ{õflşš$é`¤¢uNĞqzÔ3#7Dn?ÿ‚/@Œ‚¬ı\ — d¯%hèúÜ¨hg†I[}ol‚‹‰0yEtÂéTÏmc5¥µõ
+uvù›Û©É—]I¸&Gá“p3R şC
+§AYUì4SôE(ê<DÏÂ-ƒ‘KÖrê{€+Sínê?"¡UO¡wrBšŸÖcAd+Ş™í­Ô‘>Ï™×3'¡n«1à„74yÂRÌ£ıC7ƒS
+2-+£N˜8uİYÙòc«YxÑ»Å{š²ÈkI¸¦á-»2<xËÛÓ½a²¿+Ù©['õ¡€~ÁäeÔb(·¤Å›ôİÏC™Æ rP=:~Íy+î/8uQŒ«ÂWÿÃæh½AïáI~>X`Ehºt{&»š¾1Æ®œŸØ©EÓšë“¾\ÎŸjG´ö²şÚÅ%dX¯ækÖ[`Z|·Â^Ù¢²~äµ¿¹Õ¸…Míx+)JMU0±`040031Q(È/.qKMMIJLÎöÍÏKÏ×KÏgHÍz·çø4ƒ+OØ‰iÕæ?õ| #x’İ›0…{[‚Ë®*lL’yÿÅëb<®mPxûI¥e‰P{ƒ|3çœ™D}ëÙ·Ôät}×Z	.‡ª2P3Ò1Âª*êß“ºşQ}76L‚H©hãtœõÌHäö÷/ø ddíç\V È?ÑĞõ½QÑÎ:†I[½+6ÁñÅD˜¼¢$w:Õs[ÊXMim½BŸ21b`[5ù¢•¸krä>9•±ú?lá4(«JœfŠ¾EŸ;Â`ˆõ…Ù˜ä)é˜ÉÌJQ·“øÏ 3wV=}ŞÈ‰‘ö§õ¸€À³Nï²:îM‡°”XlçósƒãS
+2-İ¢N8K\Áõ%Úg	î+sÏïnñ¦Ìó:~”iº–]>º¶kO·†‰ûM	©z)ô¡~Áy‰¨ùPößâ´_ò<”iĞ uïŠ;”:l÷N2òqMBº²9Zo0{x6?,0<42õÏÉ®¡{ÆØµëNìÔbhİé“¾\Îïj×Ê^Ö“P—a=º×YoÁ´x¹b/¡·TÖ¼Rû›|«ş ¤‚@øx+)JMU05²d040031QĞKÍ+c8å÷|™§ÃÒˆç•Œ}HtğOœ
+“OÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJN11 ½²âäü”T—kÿ?qÍa¯O	—»enèÎ%QáœŸWR”Ÿ““ZÄğÚÇĞo…ÁÆu{ÚÓôVşw¿œk¯µ,ÈÕÑÅ×U/7…g‰Ûªæ­iSİjgûãVšdÙ‘ˆIA©ùÅ™%ùE•3‚—½PÚô´ÉsıÙwß.kÛ&y¢(8µ¨,39•!ükÖYR¿ƒfğNŞ%²/÷Ç„rˆŠäÌ¢äÒÌ’¤¢ÔÄl £UäİòT®×h5X–´h|=5U>¢0¥$ŸaCvÁ<WİŸ;¸ŞœéÑ±¬{xBz·ÔÉéùz¹ù)MwU¸Ş˜>ñêâU¥·§Ds%ÜàˆG¨(.ÍeÛqQq™]ò¿%o/%:ïĞëËròÓÓNx8™ÉàÌ‡)õ’S5®¿W-âàâ¨¹‰™yzéùë-½u-m·wL=ùÌ¾q×·S"Ï§CÌÈÍM-*Ê/b°øÁÇ·|ÑûÌ—¦»Ÿñ;'ïI¨Šü¼ôüäü¼¼Ôä†"±ï»BT‚¦ïö]ğÕêC¾ÜÛ, „Ûx+)JMU07e040031QĞKÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJNª
+rutñuÕËMaàYâ¶jç…ykÚT·ÚÙş¸•&Yv$ È.—x+)JMU°´d040031QHO-qKMMIJLÎN-*ËLNÕKÏgğ6tzÇô%¼¼·TÉ£ÖÅø>Ã§—PùÅØtèN`¼™•“æx›c‡ÛÉ™%÷VjM~
+ ¶¦()x+)JMU°4d040031QHO-qKMMIJLÎv)É×KÏg8pÎàˆ×¥è¾ošşq¤-sHXYÆU\_Œ®Zÿ–«V©ÒenÑû¢&~µrœsĞ İ¨$»x+)JMU05f040031Q(È/.qKMMIJLÎJò2Kò‹*õÒóR9ûn×ßTÓ9¦1õ½ì´Éaûsß {—’x…“ËnÛ0E»¿‚å" ƒŠdã"‹<štÑ´†Óä‘D„"Šêÿ½CŠ
+é4@6683w.çhXK]ÓõúÓúÃ¡jªèP	EˆÚXš“¬ÑÊ-%ÊZ€}uåÍK‘ÌÀAÂjó7©Ø½±bóK4¤çæ°+º$ÕÓLÂÖª'0Xñ U§ÑQAc“ºÁ…QíÂXÅÚÁÿ)°eoíŒuÂöSÍ=”6BÊª¦?Œ„´“jü°yAŸIv[Ùª®F ›Kšr¸½~>’¬,qPK²-şÆùœ""àßá·ËßT±.?[<Š¹E`àôĞkq¨ÈÏNQ ]Ï\‹™#¿™é…RC¸y0ÄÓò)gA8½¶u³s¸ÆŠº"DDÒ‰SşOãŞƒo³H¤Šè„Ca>Ş5@HfJä±,nn £'‹«<p1ˆ8de¹¤ù×Jí%ÜáÊäÌ/ÁòØŠºoÛóôãül¯÷cÎ¶?²hxÚ±»4±ãÉXOWR.û4&=ï¿¸–.>ß¡¬T9[@î&¥„ê¨PÔ¿ä‹óóµ÷-ãv¯„£u¥öN9“º©d#m¼bEg@Åg¯úxI•î½œºbGmhkô@m~Ál(Î‚¼â‘É?òc…‹x+)JMU05`040031Q(È/.qKMMIJLÎN-*ËLNÕKÏg8¤¡ğƒÙ}{ÆDÕÖ¥†‚:œ§ù 0/	x•UQoÓ0æ5şG¦¤´î˜@B•ö°!&Q˜‚çÔ¹¦fi\gİTõ¿s—8MéÖmTª’8wş¾ûî;gš›)¼ıpròj™¨›$C87…³&ÏÑ
+¡KcD"±P&ÕE6ü]š"A‰öV+„p†˜N)wxİ¬Ğ»n-u†'“/&ËĞîçõB»p|)ĞçÎ-CA™vój*•Y	í~˜™©Åäm(b!n”½v_Ùl/„»_"\™Ò}ò¤ºb t¶RÖu_‚lÆT…/âRj
+õ¯·—çÚªJ»qÃElö 9¿¼]8´³„D"Ğ„¥ŠVÀ¥ÊïX.MQâ/«)²z~ıO…¥‹EP¿iÃ¥•.qUynRdÈ>¤‰K:ğõ&f¦³ªPğW»<:²QÛÎ§4éirPøğT¼EWÙâ@ÀÚcÀß0Îˆş›-ïHAïqâÿ¢Rh_Xn»¨õ.O©µêä?¶¸$­>"ymdåØ¤÷±l££6¼ µ0:­7`†?“\“şu1G½>…Bç{å…µÆFa}ŸFóÂ–,KGò@ äúğîø¸GÌšA[ƒ¬¯·N5!Í‚ßká8IÁ×’/ßCè¾¬ròo1ãÊ”TSyq‡ªâªÈEQÑÖÚëMŸé×…ùF+¹ï£Úö;š08é²õ”<:GÚ€›c›Â:uÙ^Íø€\ïŸ—«Ù“ëáş4›-œ¼²$G^D~Dá‘†0ƒ6 G²õ!WïuüñóâÙÁ§ˆ`%?cÂ6åYšF!O=nğƒË°a²\æZ%N›¢9Ü©‚œktQx¦ùqàŒÁY›Õà›Õ™.x‹^øÒœ	º¹IËÿKjøo“Ò{YIµ¦^‹N:âvà/ø#GJ­bÙÜF|–òùù$2l$x+)JMU05d040031Q(È/.qKMMIJLÎv,(p-*Ê/ÒKÏgØó!2eÚÓn_şÙÉ\{&}Jë“W mctx••QoÓ0Çy?Å‘ä”Ô0$Tiëb…‰!xNœkj–ÆÅqV¦ªßsâ4¥]Ç¨T5±ï|w¿ûŸ›:…WïŞœ>[&ò6É¤.­ÑE†1µXjc³ ÄRêL•ùèg¥Ëš;%Âb–’ïè¦]¡½~-³šŞ§ÓO:ÏÑìÍBc»°î§D;š[»½äÊÎëTH½Q´ûQ®SƒÉ-šEŒİ%Èİ¹¢=1{¿D¸Ö•ıà“ºØ•5µ´°îS÷%ˆÎaBUø"®X Sh>ƒmpq¡Œ¬•´¹°Í^@çß¼UZ4³„ QĞ.ˆCÅWàJ_±Zê²ÂF‘e~ıW•XĞìtfÇÜ*›ØººĞº1d‰MúàëMä2Õ¥„Ï¸:$Ã»V>Æ#âqEt:î:uÛVQ
+m·8•gĞÖ¦<â¼öùŒÁ?¸Æôİlëá»`{úgtŒÜ>p×(§®NÓ@ú¥.5İ ]:é*à=Ò, áFLtv‰ö¿èÜH£ã³æ€ïI¡¨'Èûı@ÍÀY<?ƒR.¬ã$.Ñ†‡Íx7š¹^:k1Åª¢%p{Òˆáôä$†mÆ­®Ö7[eŒÛívÁŸ3†p’dàëI'ïH1ô\ÕéÉã§¬\ERÈT\şFY»ŠHU<¾•úz»Tµ‰š¢|ƒ¥Ø×V3;<\pb²ê149ZK\ÀÎ±sqŒzoO2:‚êíã¨ší=T‡gğš-¬¸6„¢(yËÂ?Ğ¨×.zgĞ&Iù˜’÷:ığİñÏK€úÁ‚•øˆ‰“n$Î³Œ‡n`°´Ãotq†1„ÉrY(™X¥Ëö¢§
+v|nĞòğ\JÒáĞÏÚğ¼(ôjøÅ¨\•îˆAøTŸ)Ú¹Îªÿsjóß:¦÷´’¦EÎn7ä—îH­"Ñ>rw¯º»ô@Çn„x½WYoã6î«õ+X¡XÈ+o²Z¸ÈCb7[£Èd·}tŒ¶2©¥¨¬SÃÿ½3$uØ±s ›æ!’9gæ›Kq!cöáçŸ~ù®Œ’¢˜‚RV\Kõày|QJ¥YàüD
+Kíãk¶0dÓg iŒ‚ãTK$Ÿÿ¦ó7(‹(%Q¥ÈåT
+‰Şf"^A$ºBóø¾ä\ßÕq˜ÈÅ8—Aíÿû£q!sâÍe¸ ñ4¥ÊÇæıÇTñ{ä+)¬g˜Æ¥â®Qè9•F¿ï=O?”À®zQ¸nCÇ*­jôrå’‚ƒĞ¬ï|h~ÌNçR•E	xë=ÚæŒ7<¤k.*PmĞ_j¨4Ãà‡×ö}È‚û³*%rØ%<)KÄFª!İ•Õ"ağµ¯3<Hã§MîóÍS k%ö0¬l &,×­b»#8dßÂYš7@×gñˆ™åçä˜©ĞZ~çSƒQ0ô<ëø¾?f‚÷¦ZhÂøæÁrĞš‹œ˜DšKÁ¬¿»	õ51AEİ¹7@™«©,
+L{Ò€–+Ãî,ğ¯”üéV>j­1f #^tŒ»…?·œ$‡õ	ş¯1×Êï–º|Ä‡Ò˜Êz9b·$âºAø–ç'¬UYë 9;Å~+Y‹4Ø‡÷TÌá =%-dü-OG”:"emé…—1y:Ÿ)¹ø–M‚‡äÅ…	#õ4bÙ½­ÌùÏ–%Ş©A2ğ3#¤LK–¢)0}ŒŒd<eZÂî`IÑ#ĞJ^BÁİ¦„Wî„Òdµú&Ìÿaéä-ù3*j˜0jCáŒ8ğˆÜÃ—ä‚µ^¯G(íí5¥MıñE}È7.=ìi$Ï’ZUR™à‘stñvŠ…'y® 4ì»‰Ál¡bÏ"õr Î,P\°0¼T~UßÃ2"¤‘â¨‚»2ÕúNYívƒŒ¿”Mê¥”}6•7Ø¥D/Ñ‰L¶º/pPX,CÓ;Ü…3“\Á;
+,ùL-e.2ø†0i•B$ q!¤z3àP
+†¿R~¿A\w@jzLÕ°—ı¹ö[Ñí|öf…Ğf?›nE„kH[ÅOUÌñFÚly“ryEcsõ‚¸šzy\,[ğRÒ£ûfÀ°»”G¥›?5é<ÁĞZÒ+’İífîïéë½wµÓ{=Ï.µm'}å\r£yßhz™­;çëìm?ë \¿Ã+…{a!ÿÓvt)‹¾n”Îf256´šñE­mk· 	Õø4›0÷çl¡ØttRè8ÜÚ(#
+1RÛœwZPµ6§å²‡…UµËbRÓì=×¸µˆœ®lîÛ¤ôy§¿:„Fæm^G!æ©œdé)l÷×³Ï/EK4[Ì…üŠK
+ŸË”g¼/İnˆô¦ğ¼:Á}ï¾‰Ş~ˆ:©níü=ÆŠµVİ~‡ÃÃ§/Åî©5BW´»gïËR±+n.3-ƒ¾æZ{è{Dšãíéênx×ÿúXİèH×Õ·*ÜŠŞbÅÛ£s¨*üÚÄÓ›:Á÷¬.Š·òÓ2†iİÀúë-âøÑğnVÚXx½WKoã6îÕú¬P,äÀUšîa9$vÓ‹<ì¶Ç@–F2[™ÔRTÖ©áÿŞ>$Ù±ÓØTIäÌpß<8/åœ½ÿğáä»*IÿN
+`·PÉšk©ƒ€/+©4‹‚A˜J¡a¥CüÌ²9RgZâÿåå¯J±nu¹¥¤¢)
+9‘B@ªû´ŒòhÙÈ[š— }¼Ğº¢%Í—øQÈxIäÙ<–ª86ß?fŠ?€:×R¼ˆè¸R|É52‘ìçDùa0ıX»‘µ¾pÖv~aµVZ´iÉAhÖ746?ÓóúKåI
+Áæ€´ã†dÍDª=.Rğ¥Z3tr|k¿‡,:¢_RëêJ"Çˆ™ ÄgU…qjHçåHÙ|İo@”ÍŸWyxÈrTSn”8@°¶³l¾iõˆ;Ú¯È}+£ÑÁ ]0˜y&Ç§LÅV£ø7Ğ¸>1ñŠ†Á€çİ÷§Lğ’b0(e7F¡y±´æ¢ â’§‰æR0+%ìNByŞ/(¨[‹Ï—‰,K„<I@ÍŒ–q·…7Jş…ûp!JmSĞ	/;ÂıÌŸ[JâÃ\IÿÇ¨kù÷s]?¡Cn„µ^XšˆJâs¹ÿÉõâf¦ltä×Î±J6"‹†#öş§#Jİøp?CE2ÈA9QèvkÑ=ÏF”ú™„·¹_ÏÉüÙôBÉåï°ò“i3†13\ÏÄƒB$H¼›"˜Ÿ¬*<2Ş(ÌÑ·1-Y†:gÀô¹ñŒå¨	[ÀŠ\J‘¬x%@z›Rß¸ÂÎzıÇ,üa™ètšü‘”ŒÕ©xJGx²í™áK·Ez íf³!·{µÇT/ùÓƒú8Ø:ô¤'‘,KUKeœGÆÑÁ»¸‹ÏŠBA‘h8|ï
+³ûÏH½<P6P\°Ğ½”“ª¾…mÈh#Kt2Ojğ±sH4vÆ“RÖûÍ åe!à‹-!Ğº£n!½%H¯Ğ\"Òíò¶Ê³hhŠŠ[œ€EïÈ¹d7Õš™Èe@à*…ÑtûçFÊA+Q!Œ¿o÷$AfŠOíèCÌş?üÇıu?›¾Y2øäì#ê^$8ˆ´™ü\ÖœnAÑ¢åMRæÅÍåÆÕäÌÓ„Ù	/Í73ºıÛA…n#~bà<F×Ú­W€İ ¦Ñ®ëé½ºgµmë=õÕÚ¶š¾²7¹}¨=½L×½=ÈU÷¶¦õÚP¾ÔñÂá±Qøi·:È¢­[©s…H¦â¦ÌàhZ˜/o;ƒu*o×tÌÜãô!ÿtû$ÔQ¸y3Sí!•ÎY'…QysR®{ñ°¢öiMbüPt‹#(èHŞöNŸv"ñ*"4ïÒº"(À–cãvOO?·y-ÚM3İ\É¯8ì ó¥ÌxÎûÜ=f¿Ùqo3Ïê3¼ÿğô”I‰poûğ)f­½iuÃ6tŸ¾û»×M¥{‰ôÓü28v©ÃÍa¦lTxçhõ¡‹‹4Ë»]ÖğÎCË_SÖw:ÑM=Á	kÌè–»ëş³¿—P×x	Å!ê®Iñ;oÊòÑ]hJC¬ûxÇáfDc;^3şè[ä*x­Ñ
+‚0†»ö)ÎeQˆ:×"’."ßàl;êÈ9˜ÓçÏèú/¿>~å¬5²\ì‚'‚’&©`©’Œ‹”•Î™Lsyæ™(Pñ“.apZ3(á¹XôĞà4ù™Æ-\~îıUqsÃg×…X9{…T$[<<ƒc²-Úèö#ĞÿŠQ¥5ihëêşªc«O÷&˜~r`ÿpèÌHsô_BQ~x+)JMU05f040031Q(È/.qKMMIJLÎJò2Kò‹*õÒó$;ŸİgŒ» °{ê´u‹_²¿ªvj ƒnŸxURËjÃ0ìÕú
+¡C!È}P
+š„ĞCÓ†¤? +GD–‚,÷Aè¿wåGílÍÎìhg•—Ó‡Û»«³T'Y -¥¶„èòì| œ$ÊÙà1à); ìsäe‹?‘ÄÃÙU:8ÿ=blÿ@dTà?´‚Qy×"XÃş]ŒJJ{Uë{'ğÈX;[8t´ ÂˆWFÕF;”ÍÇBÈ!œA¬ĞáXçB¹2+œ×ÆÈ¬¬¿I	9ÔV5Ãò”^H²”Aæ²:{¤cCÑ–óËI†™"k[¼Âçª‹fàğIß3%I7oÔuaŒE]•O5jº æmQÚf%mB]“Á 9
+ğ¯_UKîNc«Ã'í”şwÂpïê€Ç6˜WÔo º´%ñ,íŞÀ
+Sä,ÃúÇÁ¦t0¬ôÙ¤báèög›·İ;Ãf¸4±ñÚc9ëCÚÖÖj[Pmió
+ï¯¯o"9®U¼è*€}²ûÈÎŒSÒÑeÖĞ¦´½_J~È/Êû¦x+)JMU01c040031Q(È/.qKMMIJLÎv)É×KÏgxYŞ¼Vg±Áõ˜î›®›Nà ë%åx+)JMU01e040031QHÎ,J.Í,q*JMÌN-ÒKÏgø!:åÖ†:ƒµZmWuŞÎü5ÕB âË”x­UMoÓ@åêıƒ•]9›!"õĞ”=¤ÁÙ^OÒ¥®×¬×U”ÿÎŒ½›&AåÃ’%ïÇÌ¼yïí:+LÇoß¾¨Ru›ÎÎLé¬)
+´Bè»ÊX‘B,•Éu9¯MŠ F{¯B8CÌ3Š_w3´6ÌåÎğ¸D7¾q®
+æÚİ4™TænL©Æs“YLoÑ†"Â=TĞ½÷i8P;Û(Ë¡¸!ış)Áğ(.D 2hŸÃuy¦­j´›võÄj³‡å.@—í,¥&©$•8-ŠUY¬+SÖÜ—¼ò£oVSL4X;8ô«í(A»Şo»ƒk—º¦>392„òÔ¥˜å*fà³¦Tğ	;©Šzu~CPDĞ^nâ=]cËİëK_pşƒ«Lè]­1Gjwh[ñŸ)f©îS½+¯¼dDÙ‹G&dKbï’«Ñ’š­Brjò‡Xv³ÑÁ“$äÎ ­…É	pº¯i¡IŒ¶¶z¼ñå	”º`H’›Ò÷öIàõÑQœğÜÚŞËëµ&İnâë:ãÂišƒo.$G^7‚¾SvNÒKAéº’*“ç?Q5\Å­­¾\%İØ¸…íµVò‘‘64ÚîÀ&ÀGpÕÿÄá’|*xB/xf¶¨ØOü+&ş1SÃ¹ÚïÑMÿö ·"XÈ˜²ùbyšçQÈW–nô…nÀ00­ªB«ÔiSv—.©ü(æ]*Eù[kDÒ˜Åè³Õs]rŠÃğ¹1—ènL^ÿYP‡´ïy-µœz.†»mÔÓsşùS‹XvŸ;›õú÷9O}x­XÉ’«È’íuEí1%c0´Y/ ‰A!´cçIğõ™Uİ(ëŞ[õ^—I&KËÅ9ÇÃİ{„öo$ ¨ÿ¢6ìì§È`×ê='á Ø4¥7üÖ£óç·ı¯>fb¸Cí*ï9Á?=lÓ3«VÕÉÁ4Q<6Mg(ç¿ÿó/g‚¬pàeÒ¦c`J6Av/à¬ÇSvHá&9+D$â[s„pÀé7àYb™ZcP]îÂiáX©×üÖ#(ñ¥X0¬+<4C¥¾(i=&J!|ïBŸß‰=\<šTˆOìß^	_u%İûZ$¤µv¹ÃÎy‚•Î`Z¤‰s£Ú£Mjş¿Ë£Ş«+İ´µ•7©ÕõgôW['ÏçĞìGÃæ¦cöè¡’=å¦ÈÜ
+—®»nâlŞöo»—eÒËKLH?‰J÷`Œƒjåp;`w9å}ŒÖcŒØr%B?wšş+²ŞJ#÷+æG?(Êçâ*­6²SoÉ¹ÎR˜pŠ@È+ŠôÂ½+ğ%!G-„ïøt¡VÃ=PšÃ¯RókUXc-$×Gê¡K$#›˜­Ö¬ouÂÇë¾¿Ó'!
+¾eÊl¯†¿~{ì·û Ø²„pƒªGD|	úª"øú–©Â>Úí–Úv$tİIİñ`°.ü-Ì•\Q8óÃÇ™ãÒ€Óañ€
+e‡ç6ğvX¡‘q}ıZy 7¹U–ãRCs/,R¯AÍÔ¢Au¼Ôö-»zßì-úïGî¼o;«‘¡/±ñ—x+™ğãeû™ĞéËóE™:>8Üß*)LÙªãP˜Å©“`ÔÙû.³RoÚ8Y¹ÈØ"óy=âİZgmÇ3QàŒ\®°nT¢EgÌ%p¾X;ù›Ì?ã­dö´«¹’-ï±äèÀı©O!Ÿwsíäaƒ@ÆÊöõ=QŸ°]¹‹‚¯´£%I%æà¶ØF	Ù^¢ÊöÌ=/`é	sŒD{BŞ¨ÿHä
+m%Q;—§GÈAÕûÉow+û})°T=ë¬AyøÒ¡ñP|­£4µà¬{-w­ÛJÓ>† Ş™FXÕJPëŠ`2XG£·KØQæNW!2¾7ñw´•DVô™#Á
+ÕEËä±ud¥è8’¼ãÛöIT<ğ3ãÉïÉ‹°˜aÜ¢õòşë?k’ò$	†ê^2‘Ôü½ì]›êe±‚óÍ^¿OR5 
+òòğV2}Bâkp/*$Â<X<¯œ›&ŞÚäi‘|.¬]Õ{©'©Õ5eÑ´ğbTµ×Ì“d|ÔWÒÕÜ.	‘b‡ïîİ¡u7`‰JézfySÑ.-OóyWï•ùsÔ•ä¼µ-Ç»Z§F¨'ø2¾$_²-»O„k“\'aäaøè½×gênä.‡»éê|‘K|©54æ0Ìm/p„»GŠ_i
+ûşCÌÔ¸r³ã{ª~¸j÷/’ï/IÜ‚Ä.:A|?ÕUœql_oJ|ÛÓİëø–²¬È[+·ütÌs¸i­ösJÏî´Á”BçÁœÙ ¶Ï¸¶ãÒı9%¢ºã_N1ômùÉ4Hã˜şóJ0y»HäÄÑ,'cÅQz¯‘‹pè Ñ×S§ÉŠÎ›ácH2ÿœt¤¹%Ğç´3<ÆS·c¢¿¯:ó<­¹í±õìÎ÷½º,ŠtÉÌìâpûŠ#†š°ÍìöÄ9bä¯¨‡ù"Å4¬aw÷2¼à/WÂI{ëÈl=Œ' ÂlÆ%FÆ-E%wcäNä¡<wBNM×¼¹Á&(àÒN\rÿ«÷ÖQü¥#èá!n7”Ì){h"v¡3
+İÜ´wB»B¶È_ã­dÆuÙ±E ¹‚¸y}@hIÌğËAeûrölmP+G*ï½Òï2§¶²Ïöüš»ÃÁ–ˆˆPTïê–Û©¯
+®ªSÆÃmwò!]oï~÷¸•HUƒaÒlŒbq"­Ÿ_¤J™õ(#ÑU0ùœqx"JÊ»“üÚÖQÌN2O¸å<‰Ï	'a%ÀÏ(ÛNRl\32<ïARaV5ç…9µÅ“tŞWİŸa®äf—}×Ía¢¸LÅl‰‰½}­ºÖ¸¡Ó#‚(®PW÷É»EE—Yu—‰ÓĞ_;Ãg_Ò(ŠR†£82÷¥‡y¸ A~nìÍ¼wç/ó˜ü+“¯Òİ	¬yNèh¼Ê»Šì¤ñ}{ûW¹VáÕ‡áäÔ©K/PçöÍa8÷=jîÙy—bdÀŸn•}£ì¢|†Iİ%È%óİ _á’£.H@^^Şoyš]ï¼‚±fó©-˜×ZKhan©åÎ’ÏÃÌş(ê şü{ãÖËşşY¿ûï…¡ÚL56=üÁÇ¯Ğ<YV$ø@¦´É‹XªK/¶õ×˜+¹÷ÉFä9Yå‘1Ğ@%v°—»:‡wˆÎÄ{GÑIOH°4d±¬ƒŸR_°Se[¬Ì 8BcØlÀôÆÁh÷Ôe,lÅæÆJà5
+s`¹$@#ÉN:J½êÉŞ «Òmš#-võ+6EE@jƒĞŒí[€¤ Ê¬Øö}oUu¯ºÃE£»=X>o°/Y‚ËıáiË½X©O ÍËáOÙşØ5m«JlHø¾	/$.¤–ıdÔOv¸Üæœiû'Ü…2‘ük%/àXÖ—¥`8ŸÔR‹¯ØÄq-vvn¾)kŞó~SÛkzá(ås³XÆrÏ·\rx®×Ï^0;!Pfn/§74é Ôs1Ò¶‰a|”H7ÃeĞ»B¸qùL"ù>ÌÿsFß;õÓº/´&Ì½ö-Ñä2_ç/µÁm„ QÏsh°>ú	pê]Ó´Œ=‘¥M’´×!Ä/gDJº³0Ø·'£›_QÍYÆ0r¶„`6J{m# E‘UT"—
+;L¾t~rR¦Gxz
+èÀĞÔêi1êöØ”’2w¹Šı4ªù gwš
+Ã©…ÚÅhw.0{EõPÃ³Í}BG17¤.€æ7€·½gê¿„hIRùÄ|/¨fÌ·$æLaÎ^ˆ.Y›sç zÅ¥¾äÀÀıôš:ÀñI@çÅe|OÏMõ–BN…?_Šû]‡õÎõq°¡éyïap
+õŞ
+ãÿÏ5¤eMWhûÃ$„¾oÛs8×:õ8ºâÓÆg¼•;­D±åÚñ#Ñ3Ğ?të™÷#€3—‘‹Ø(j»–åĞÖŠê¦]h¾çGgŞmMk lÂ6‰o@`Z>6
+§_ÜØ‰öá§o¯Œ°WTóî‰¢Ì\¶4Jm|š°)†ñ\§6Dg'q<æ¡Jû«ĞÔPŠ
+ï¾UR.½w;Ixº¼bß›ã
+EH 8@PrC’À£
+')]EU\’°DåSR¹î•ÜÖI ”±“fNµÍ–ŠXš»çÚ÷æx§Â0GæÙml›»İr-Yà?Gõ{jC;Œ?—,eàÿ#Qµ^=/zË;Æ²“,Éšíeq3lC¹ã0ˆÇ¸o'hÇÔÍçÔvËİfšœXÛ)B+^ÌÈ^€+:ÊŠíì{IãZÖFèÁ}Ç'g6œu¶b›GÅF Ò´wW¿{dpf^Îg¹NÑƒ{¨Ê¹·——¿lsëöi½×§Cãoí£T2-èg%ò89á~%Pé’›aãr8´Ô8vÃy¹·ıo½Û€gáÀWµïÆt_¶r_&¾Ü‘Q}f&†~ñW4İ>ú9µÊcaLNQh}•_@0#ß™H™;§`•<ZÄùÓÏñÖ%ĞœÕQÇOÇí™šŸêôÂ+ÒÅ®$ğ¯´ñ3¼ù¥÷ë-ÎyÌHfá×J£‹ˆ„¦èB¹Ú½a+éˆ}„é!?tAZ…ŠÒÏóõ(–&­œî•™4â¡ÕÜG jwj¼p%jŠ9İ–W·TÌ7¾•Á 4Â,{ôl2Ø†A|‹¤1³ÈåùëğœR¸Îu¶p.L¯û>“lŞ0AéšTmŸd<š½Ld:‡odÌâfØ<¨æá1´86JÓèšÌ†0¸ìr¯}<‡6’:[my˜“1E› ®á>¬ğ§ùƒl~Yo‰¡²?ô¼N(R)«Àç[e€«è!÷ó˜Í÷…?ím/¯®‹z}ZB-)˜‡ìÆbhàâBYÖº
+0˜H†nrF´hÍ;9Œ,Ö…®ûÕvkuF|­¤v¾ø™ù¹]¯œÿtóËÃ¼‡! '7Œíú–=[? ğe8
+T 1û£V!TXúµÚ‘äñÎ{/ÙJü`ôÄ¸ÇÖˆÄúûúõ÷yVEğ/…õ?*Ÿ8xí[İoÛÈï«ôWl	'e»E\ø!±ã^ĞK$¹Åá`PâJá…"u$u‰køïof¿IêÃ¹Ä½Î¹;;;3;_;»œæåTÿõääøO«dö!YHñF®Ê:kÊêf8Ì–«²jÄh8ˆfeÑÈOM„Ç¹”éĞ“´)ñşòåwåb!+á:rn ¾²X”çeQÈYãõ/©©™1.ù§É–2Æç•n¹”UUVÔ-Ê˜G§Ó¸¬~ş&­²_d5™ÖeAèvÁLVU¶ÌŒ‰†‡Ãá/I%@±0ŒÄŠŸá°¹YIñÙ\j†hDİTk°t;ÌòLğ9ùåâÙˆ¬š'39¼‘=ƒôÙ‘Bu)›Ù{3Y=ªäÏkY7bMë¡=¡wM•BT¯Ê¢–cñ„?]­ ¿²:¤içëb&^É½lŒÒévÂ7°b+Ù¬«¢¿ÿV	åT¤Ó;KÄ¨ê>_šoÈr8 U5šZ‹~$©½®ÊŸ rF˜ÃDu1ş!;=U¬ˆ'£ıœ—wt8ds÷ç3Qd9­Ù š³¸Gÿˆ…lš¬XpÍ’&+¡°Dn&à3"×>Ü†ìó2ÏA.! aLdìÚFQ‹H'1k>Å5Ğ6ÿ;kŞ¿ƒm•ëfdÚHsU¹.ÒÑáXüåè	_üV¢?…M°øVÙJæY!Vü­yY~X¯Ş6	&àö’Âí?åÍ©ˆ ıW’¯å©a@æU¹tıÑ÷µ¬.d“dyt7"–—³$¿ÌdzÀk _gi9/+™-Š6l.©=L4íµ?ïÍÙ[ÏD²ZIˆÇ´Œá$,÷$¢uñ1+Ò¶0Œ$T¯7åA0ç©<Ü4tO{ë	.³Şåjú“ÑêWÉR
+(f±^®”®¿LàSÚ4zr>X€#Ó-©]
+éºÀ@Ã®üÙuíEêK|0P?ÇVÑw¸®Ã»mÌUµHŠì¿l‚-é vØ®/ "İ—S›òû	Ë§Æ1·ÄŞ@Vp]Ğ¢#V¢ŠßĞè­î¡CÆ¥]+ŒNW´¾İO™÷J›•}Äq	_u‘4¾Y¥x}Û¨H¡âsEšqPê<¹Û%¹EG'“£ãÉÉÑÑß¤Èî±*ğ°~Tµ©Ac¡'©¤èç?ò «¬LğòûH‡jÄS}„ 7*Q@Zğ}!?­cdúœPŒ¢wï¥`–Â€ì‹™ÒŠEâË&S1ğ™’ Œ›4ºcÄŸ­N³J‚‚ôù^;ÔMZ4-geH»ŸÚth#;Ïó"e:oœî£6z$õ‡Ö(ãxp­AL5êËjMígF¤ùß‹É$•ód#É—õÙyß²JeÕÚŞbx|Eİâ%©g*Ö;´gâx£~òhäëeáå	4¶¢¾PñÅ­êlÇx¹µHÎÜÂävxK†¶/$²ÚôÚÄq’kCêP© '½ù‹†3€p{ÈÙ[èŞF~öÏ³ªnLœ Ãş<1İœİ€çğ“–îÆxL©h/ä¬ÄV¸ğ¨ë€ö9ÆŸ.t¾ŞÕòİFÙ¶]÷#Ã€á‹Oëi¶=©µ¿Ö”ğ–óy-9l–p¥Úm‚¢á°mÓÁXp*_È:[«Ùès+,¤£Ûh´øˆÀœ*dÅÇGxóòóï¸Ã¨à}Ü­L”»ÚÚmäNG!¿î"Ğ!$
+'“¦µLªÙ{Ñ ª“²á ISŞ.µ'Gä1óoÓämŒ
+¯óœkG§cQm0)L†¿Ğp|ÃÒı°®>Hgbª;ÜM¨ÍÜöå4²6l²Ş²øXV¾ËäÖğˆL#¾İ»ª¤TÖbXlOi#?-Cj‹±†€•\ÈO§±Síğx¹Ch¹¢ú‚·ÊQ‘»ÖB§°.«ãˆB¸ …×Y¦Ù<C8½q|?8)ı.òÁÉğÊa€
+K1fá¿¾¶øyæÚ*==óMŞêë€äN¼(fù:õ|/íÑÈ+¿¬ì}8ØÒª]E&mÅ˜A´ˆ¬§Âş¯íˆ¸¢G„aÎ£±¾p% cj©ÏŠÕÚËS:³»‘ú†ğ°90ˆnÆUÇNÁ¬ïbòu}Épcf½ö÷°×ë5°MUKÏêS¢Œoİ¶*6­õ&íØë0L©×ïlÓ]€`à jB“)ØÚ·=HÁ½¶ vkç‹fñDE¯í÷°;xó_¼gï±eJı[+iïÖÁ(ğ=t‰"«&AÿªŸ»#—qü±?êìQ6§%ĞßÌş(ÜáùdéÀşÈ#kë1ZG¥w%J‘(PŠlŒ«mñ¦İ8	—@Õ¥“GËÉ£ÿˆGß>zÉg+í14—7âÀ#—´Ù€{ÏîÑ>™Öx¡*š¿í;	«œëS%ë[¹{,-¦l’üz†-¹ îÉÕkï Š5„<‘‡?´­`à}•rA—«àíê¹¡^Smá:ùypË¦¢ÙŸÜ¶€º»'IOWÂíÉ2Ì²„
+İ·ÒvuöÑaZ%³š;ô— Íúë_ÖúÇZºgáâ„v‘³u…Z–­ê›%qç¶ñÓÅ!&µá0ÖÔ àé»U:n~QÌKU©ç“sª^ê+
+ªVï•ıõ1=2o®úsñ_||ŸåRÈOr¶æc JTq¡º¡Ú?B”›ûœ™XÎfÁ$]ÁğX(ş1 •MÔk|—8×@ªG—Hbÿğ™d¶ôİÕÅÕè€h2íXd‚Ï«üC¾7ñº}â¯×'¾ÀIw*GÍú€`{î^[¡2İõØ^& H'‰”ñ¤¶—Do±Ø|¹)hÀó¡õz£¬¤9ÅÂŒÿŞ>úÙoQ‹v2wŒC:¬M[_/°®’¼¹¶É]nB{qüøNÕÉ£w¯-\yg¯úÖXÓÊvÎ6àÜi>|%(~­mVN]µ:¡ÄIÁ&,ˆéØÚü37Ü±Vâ³ïäLö[ª½p©*ê[i›æ'ƒğ‰37aºkP3Ó›Œ,@M¦F¼µ‘³ÅmÂÜ6<Ÿ*%ğßäÙ`Ğ<ØQ•`ö³Ö"jƒô§àéç,â^¸º¶ç]£!âÚ¡¼7ä¥Yœ©C–ÚæO¼[³öl£àİ÷AÕ›óœvšèEË š{§»(ŸÜš0iÈ4\/¦ø½‚bkŸ…²+ÒVé%iÑAk0 •i´µòqÄıæğGn™À×„Ï˜¥3ÜM¥X
+‹ùt—¯|Æ/âáà"XõóV¾á¡Üé*Íê±2Ô0¦ÏÛäğÂ‘ÎZîéï6¡aåæü¡ÙÙÄd¢®¯…CÙ9…M%Û”8q•ÁË0ÚÎäœMïpzGÃÎn '7úmR¤”vÑ%2Íù²Á•.\Ís¥=¥y©^zøu\¯«u§ï"KB«RVàU—düŠhìkÜNõØIµ7	õ—·ySº‰CQC®Ò/4³/ Ğõti°ÇüÉLØšİ6_·5¨Ô|G}³+?BÎR'.oã¼Ö&°†PN–ÄÔä²¾;T§ÎY8“ëï1ETpÆ=ŠüÀA4ˆŠ¯_ÕÂÙ¿WJ±)+œ¾3ê§>;-C&]±U£k˜H÷¶VEÌ9Ã
+FƒÒSu,‰†v‰[•=%¸É¹ QûåßƒuµßoÃ´îa[}ğ¿Cã
+ØØÏºôúùÛY:sw&â¼—…C‘éÿoF†ôì¸¢‡ËŒ¨èÁğÛå³Ş$×‰­5ü¬¾Np™}Ø:NÈ&YŞV¢4,´Š“&f*Õñ=Â%iyü¤QõuLiÏ(ÃaLüXÆ¨ÕÚéâ‘Ú·TïĞÚ^òê³ê¿£úî¹VbÚªõ~º3ÏÓtô=ø¸ãŸ(ÈÓâª•¸ğÅØ4›÷½ië‹Q’Îw°†9Şq¿‘5İüáG|†„Q‘hç~îÉVª¤À·ş¶¤6Ûw4jD¶Üe›BD¸sè®Ëó®d!
+ê˜HT©Àl	CúêS¥îK3):‚"‚q–¿uŒOrŞp"ä&Õ)ĞãŸBİ:e9U«»–±-–ªâS}jKd¨òiÈö´µ7ğ¿´È„1ü"Øu…5ÖYPôR—mõ®÷r8ã‹©ÿ}¥}1x+)JMU05f040031Q(È/.qKMMIJLÎJò2Kò‹*õÒóV‡Å­úèÜ”ë¢qãËB×ùÿgè>  ‡vx½‘1OÃ0…Yã_ae@	ªŠÄÙBC:Pu¯­¡9ûÔÿœTŠX‚Kç{÷½w.÷ºä×7WgFT/b¼(î¬eLÕF[â	‹bºÜ™˜¥ŒÑÁ ÏñMÚrG¶©ˆ±h¡%pR{mÆ,éZÔ†ñ†E8×"¼Já¶ï©ª¾áÈØSƒON„”ç.È’”_`O´@E~Ş×|©'dæA5cÑq¼„÷¥^h$@ê$,ı…”~~—=kS·[š¯HPãÎØÀáÃ@E 'vğàcZûØ7°lìåVÈGxmÀM½hl!ohçCU‚”Æ‰W²FáqÚªO¿i_şÃÇ½¶¥’0˜ø¤Ä,Xx…“ËnÛ0E»¿‚å"  CŠQ´YäÑ¤‹¦1œş %$"iPTüïRRH§²±Áy]Ş£a¥LE×ëOŞDı$Z ½šÙŒu”“¬6ÚY£XÊ€}…uåõK‘ÌÂÁÒû'©Ø½±b ûSÖ¤§æp~#Û$UK[ÒUÄX¬¸7º5¨¨¡vI]ïÃØíÃXÅš>üipeçÜŒµÒucUÔ¦/[c¥R¢ìÇßŒä„4£®ƒYÓg’İ'*1 İ\ĞT°‡›«ç#ÉÊ:’mñ7úóAñ~ùüíŒ*Öñ³E#ŸFÌ|ÿèuó\ÁÏN±†t5Aò#&ÅõDoN 5„ËgA<-Ÿrj˜O¯ecİ¤<_cEOU""i‰D—ÿÒ¸ƒ·``ÅÿY$­Š¨ä)To;'N‰æ†Äy"Ëx¼Ú®¼UkF‡ Éá
+yd»ğpËrI_…Ş+¸Ååâ,¬ËòfØŠú¯%ŠtMòâ\gögÛ‡Ç,
+NlÁ-œxb­ÀÓ¥RËæÉÌ»/~d†O¤ØZ©Òœ-Èw£ÖR·TjŞüÇóóuĞ—û÷T|“ƒ}©÷¾8S¦ªCK›Ğ±¢ üsèzAµTşeªâDcicMO]añÁn(zÁ^ñHä/W²“x•V[oÓ0æ5ù&O-‚N	‰¡=°nå…­h^¦©K·óHì`; ößñí8Çi‡Dªö\¾sû|ìM#6äõÛwoueõ½ÜQRk‘ç¬í„Ôd’gçR’bKi½1GmK¥²Èó¬Ø1}×of•hvâU×”;)z^ı,V—ÚšMó\?t”,ÀÊâ*-ûJ“?y6Mßr+`|Gnï•àÇEå„/EË4m;ıPÜæÙRÖT’‘¡°ÂÄîqnÁMårsb~–âVú²l)qŸ4z7¨h“Â®äìw©™àÎ9õ#uê|eÜL…Ã‡qmÿ„’¥S§.)Ú³R‡$moÔ©Ó9¯Ÿ‘õêÄgÜ3ÔªOÌÌ`ÈÙı
+‰#i¨¡±Æ	r¶Ün<é/œq
+iCKYİ-mj¨h? éj0~Í’0|b„(åD4£83‹D~²LT$XĞûÀIH hÖ‘®À‚;+­knØ\~ƒíÑùª¨ŒŞ¶ê¡7êÄİ
+¬½?vç]ÃR_Ìù+,ÎªßrhZ¯—ü N%©!z½jPà°äÖ³ö…8>¾0« ûÃ—à˜¥ÕRsÓzÀaÔc ¹÷2H0¸3¦ÌÁ®ô·²é©BsÛË˜\ß¤I×Áu£úâÔ8ê~ šæõMZAÅÄˆˆˆÊ¶¯47?“äxx¢Î4‚îiP{PÂ¸9HüdDßQèÅ(sh?.àŒê’58ÖúòÒâö3'h_1Lë§ò‰Ûißş?ıeé¡q%!˜§P …Q‡F~ºlææ&Æ7-¢Ä´55l7¶hj©¶UšÿŠªNpEÔ	ı¾¾	ã„ÎÑê†–phğÊîH7·ìW(no+!æÚ•ç@¬Û ¿ñ(a«¡^X_X&î·ÿ
+¸ö¸NÚ˜0°‹P¸t·¹=aÀSóˆ:ĞÉ•.u¯æ¢vw<lŸ÷ ³¡ı¿ª”}£‹±eĞù˜ÛWÄğÂ¾Âè¤‹·Ó”¼pºÙ‡®3)	iß`?ƒ9>!á·³KúkboÛóâC::[¹çÛ¤›¾wªç'„³Æ"e’ê^râc„Ó²¾¢?ÌbÔ.Ú¤0"½¤˜æÙc.Á4ë/w‹”x+)JMU040e040031QHO-qKMMIJLÎJ-È/Î,É/ªÔKÏg8íj³`‡À¿•r²éÙ¾_":®ıê*Ã¡I¡^s¿âYùç—woz³ËkçŞ - '´-PxRÍNƒ@öÊ>ÅÈ	ÁÄƒ&MzP£	‡SãP±ì®³‹Ú¾»ÃòSÚ4¼í03ßß°ÙªÜÜ^_è,ÿÈŞÒW•£U­Y„G¨•©¬¢øü²OˆÅ†Ç¯ÖSÃŞq«°Š¿­VD'KuDŠ|
+awáeùÚ³ƒ±ÔäÚ
+’ùtÇŸŠı	Î=KpR¨¤E*³;¬ùn@øÙ ±ÀJ“uÿ!ˆúÒh%Æ9ÉÖlDQØ‘•Ìá¿Ç.ÔêO¥áY«Î£mHë¶èÂ¡î'îÀ@4·28†ÿŸ?h=!¼r8p|*X,Á$$åLh:ÿÈ
+¯*İäådµí’æÆYâ2†>CNìMâÆÜbáÒü‡†Œ"p•Ï8œî¸yĞÀlıWšì„xÅUMSÛ0í5şªŒMƒÜ`&‡Ò6S(!‡Å^'*¤ÊrJÊô¿wWr‚C¯msŠ¼Ú·û6³JÏØÉÙÙé#òG1vc@ÇQ$—F[Ç’¨ÏÖê r]H5Ï¾ÕZyƒµÚú+©3©'+2+pÙÂ9ƒçëë+=Ÿƒe±Ñµû PÌ°PVy£¿¿´¯/—K ¼q”FÑJX†Îìp“ˆ‡|QäÖØh!Ü|o v¬v¶É{z¢~í8×F«v¼_L]÷0‰Öñy“Ä[åX9°¥ÈÉí	…ŒIŞwØÁš²¤ı}êÁ‡Æà¶).•³/ğ# IÒ–êĞ‚k¬jˆ½slË±áíøáóåW6`ñZ7öAùğë¸s=½»¢k"¨>Ï2ôàI’çz™­N2Ps© Î
+±’*—GH:<exi*pËÄ-¶ä0@KÙßkœº#ÂlË8 ¤Ô¹gûBë>C°ó#9òkaë…¨º3ç­0L–Şùí€)YQ*ÂÇªÔIìÉT¢b°+”ªg öÙ¹?')fØÌãûˆ/8›*x2;(‚' ù%i!À[ 4sŠjq%ñíÍä+kHKŸù§FMY‚M:İ†½vÁ?(Àò	¸$iÔ½rG÷ø
+±XSÉ\<ÂvTíÄ·ĞVşô^tÂÒjx×ªß{/¯$æ%Vü´Fş%ƒ¬Ív’Á¿×4¢=N¦W òÄ'MòQ¥k@¡z²¼yâ„kê>"†ò;=>ş·òÃ…LJb9ÈLiuDe	ß}¥ÕËÍ2¡­Dú‹ÓWºu_XØíøD1¬*œyÛî'õè¿!lØ¶¯°aÃGÔÃ§ˆ[Äï†©Z¶Û!tuĞÃ®BÈÿmfËS)d…,9ÍšÌªïÔ´Û§‹>-6üø™ï•³xKÊÉOR04fğÉOÏI-KÍ±U2R I˜px+)JMU05g040031Q(È/.qKMMIJLÎvÎ,J.Í,q*JMÌN-ÒKÏgÈ6­²32¿é½¬*\ìçå<¹T%V Á:›xí[moÛF¾¯Ò¯Ø#œ@
+TIN‹âàƒ?$v|®‰ƒ$½Ã¡(Z\)l(R%©&>Ãÿı™}'©·4ñµ@ıÁ"wgggfçmg—×Yq-¿yü·oÿ²Šgïã…¯åª¨Òº(oúıt¹*ÊZú½hVäµüXGxœK™\z’ÔŞ_¼ø¾X,d)\GÆÔWä‹â¬Ès9«½ş%5#53Æ%ÿÔéRF}Âø¬ôÑ-—²,‹’º¢E1æÑÉõ¸(~ş*)Ó_e9¹®ŠœĞí‚™¬Êt™Öõ‡ış¯q)@±0ŒŒ?ı~}³’â²¾Ğ;Ñˆª.×`é¶ß›e©Ìkás:æ—ó§Ï!²rÏdÿ.DöÒ#dÏEj@Õ…¬gïÌdÕ ”¿¬eUˆylZ‡bğˆŞ5U
+Qµ*òJÄ#ÜøÉjùå¦¯ó™x)?t²1H®·>ÜÀ>ˆ-e½.óîş[%”‘\ßY"e7ğP|n¾!Ë~Ïhi%NNÅ2~/?şD’{U?CíŒ@Gb:ì÷ ²óë‘àÒ=)ÇŠ	5ÚÏx™€Mçî¯§"O3Z»4hÌbDü#²®Ó|AÀY:‹ë´È…Â¹™€ÏHˆ\{¿wçX8+²$ÆD]Û j°éd"fõÇ‘¸¢ÚvÇÿNëwoacÅº˜6Ò EY¬ód0‰¯§ÈÇo$úØFŒc•®d–æRŸ 5+Š÷ëÕ›:†ÃÀÜ~NR¸ı§¼9Ñ‘ £ÿŠ³µ<ñ È¼,–®?ú¡’å¹¬ã4‹îF@dÀ²bg©Ìxà«4	!çE)ÓEŞ„mÁÅ•‡‰¦½òç½£Ù!{Ëó©ˆW+	ñ˜–œ…åD´Î?¤yÒ†‘„êõ¦<
+æÜ1•‡›¦‚îi¯`=ÂEšÁË\^ÿl4ûe¼”ŠE¬—+¥ï/bø–&œ–àÈtKj—BcºÊ1AĞ°+q]{‘zÇïõÔÄ±Uô-n ëğrÛsY.â<ı/›`C:ˆ!¶ë3ˆÈG÷9äÔ¤ü0aùÔ8æö‘ØkÈ
+®Z4e%*ùİáŞØê:d¼ò•ÂètEëÛaj¤È<L(MVöÇ|Õy\ûf•àõM­"…ŠÓiÆA©³øn—äMO¦Ç“ÇÓé·HVzä	÷HHxØ¿ŠËJÔ ‘Ğ“TRt‚óyĞU”H*xù}¤EâÆ	>B„•0 =ø!—Wˆ12yF(ÑÛwR0Ë	a@FHÈLiÅ‚"
+ñe“ª1ğ™’ ›4ºeÄŸ¬N³R‚‚ä
+y_3ÔMZÔgeH;LmZ4ƒ‘çY°7NöQ=’úSk”qÜ»Ö ¦†õyµ¦Â¶Š3#Òü¯Åd’Èy¼ÎìËj†lƒ¼oQ&²ìmo0||Iİâ%®f*Ö;´§âx£~òhäëeîå	4¶™¢¾Pãó[ÕÙŒñrk‘4œ¹…Éí
+ğ–m_Hdµé5‰ã$×†Ô¢RA0N;óg àö³7Ğ=¹üìm<OËª6q>€û³Øtsv^tÃOZºCâ1¥¢³[âÜ£®Úå[@~~`¸ĞùzVËweÛvİ§†Ã=ŸÖÓl':Rk­)á-æóJrØœ–p©Úm‚¢á°mÓÁXp*_½O[[«Ùès+,¤£Ûh´øˆÀŒ*	dÅÇS¼yùù÷Üa	Tp>îV&Ê]Mí6r§£_wè…“I]ˆJÆåì¨ÕÉÙ@¿'	o—š“#ò˜ùˆ·iò¶F…×YF‰µ£Óƒ±¨6˜&Ã_h8¾aé~XW¤31Õî&ÔfnûrY6YoX|,+ßerkKxD¦ßî]ÕR*k1,¶'´‘ÆŸ–¡FµÅXCÀ£R.äG‡ÓX„©xx¼Ü„!´XQ}Á[å(È]k¡‡SX—ÕrD!Ü=Âë¿,’t"¼¾q|ß;)İ.òŞÉğÊa€
+K1fá¿¼¶øyæÚ(İ=óMŞêË€äN<ÏgÙ:ñ|/íÑÈ+¿¬ì}8ØĞª]E&mÅ˜A´ˆ¬§Âş¯éˆ¸¢G„aÎ£±¾p% ej©OóÕÚËSZ³»‘ú†ğ°90ˆvÆU‚YßÅäëú’áÆÌzˆöw°×é5°MUKÏêS¢Œoİ¶*6­õ&íØë0L©×ïèmÓ^€``/jB“)ØÚ·=HÁ½¶ vkç‹fñDE¯Í÷°;xó_¼gï±aJİ[+içÖÁ(ğºD‘U“ ÕÏÎİ‘Ë8şÜµö(›Ó’èïfîğ|²tO`ä‘µõ­£ŠÒÛ¥H”(E6ÆÕ´xÓnœK êÎ‡G’ÉƒåäÁÄƒïN¼à³•æšËqä‘KÚlÀ½g÷hŸÌk<†PÍßö=«œëS%ë¹{,-º¨ãìj†-¹ îÉUkï Š5„<‘‡?´­`à}‘rA›«àÍê¹¡^SmáZùypË¦¢ÙÜ6€Ú»'IOWÂíÉ2Ì²„
+İµÒvuöÑaZ%³š;ô— Íúë_ÖúÇZºgáâ1í"gëµ,[Õ7KâÎmÇO„˜Ô†ÃXSƒ€§oWıé¸ùy>/T¥OĞ©fx¡¯*¨Z½Wö×Çõ|È¼¹êÏÅñá]šI!?ÊÙš(QÅU„ò†jÿQnî3fR`8›“t1À#¡øÇ T6QpP¯ã³¬À¹R=ºL2öŸIf„G¾D¿…{{y~9ù(Š¤0ùjÄ«ğ@Ö«Qœã;‘ƒ‡´x·lñÉtW#‹— “	ãIl/IÕb‰ø"QĞ€eáCë¥DÅH“	™†oêì·^ŠE;™;¡!uLğÓe28
+¨b¬õÔP%^ÒuÅE}ô²pØçtM@é ;{íô½ëc)hcŞå_´ûÇél„BAû¾Ã¥wh«ÏîU¡K‹Tİéœ;íï_ic×W—»££VrR°J–ZFK‚ñ®‰àb‰5/Ÿ}·Š4`?EØ—*¿`˜ŸÌÍ'®êM{*fz“	¦N†L¼5‘³=oÂÜ4kŸ*%ğßT	káAó(`GT‚ÙÏ2‹¨ÍİŸ‚‹«Ÿ²ˆ{áR–mEÈö¼û7D\3èÌ Hˆ’´‚
+ÎÔéß”b+æmµg>è¢Êåœ 5óK/Ìi€w,ŒºË­‰¯†LCÁ•ñPúf€W‰Ô„˜ü õZä»ÒËî¢£Æ`ª\**[ÓhkåsŒÃæğGn™À×„O˜¥5ÜM¥X
+2’ùõ._ù*ŒğŞıŞy°êgDÅC¹ÓUšÕce¨`L-Ÿ·Éá…#µèï6¡aåæÄ£‹Ùi'»¦p(;§°	²Ãa›'î@xùKÓùÁ€œ³é®ûàaØÙNÈ~ç	åkt;ƒLs¾¬q7K³ÜÜEdÏBùa¢—~÷ò* ê‹‹C, åwÚÅ¨Û5*Kqyì!ê±=’jodø/n#ò't­§©†\¥_hf_  #ëè¶a‡ù“™°74nC›¯Û¾Tj¾i×lÇÊ³Ô	†Ë
+9!¶™¯!”“%a“`_„-ªSç,œ'v€·Š˜ÚDD¢ä{[•pöEÃJ)6#e…£täÃÿUjás±ÓÒ8Á0dÒı\5º‚i-¸°í°*bÎV0Ò”ªeI4´mLÜú›ì‰0(áh«"ç‚Fí—ÿÖÕ|¿Ó
+¸‡muÁÿ+`c?ëÒëço–é°Ş™Xˆó ‡#Ó3şßŒWï)Øq)· Q
+„;á·‹§¶ºè'¹&Hl-ş§ÕUŒ[øøjÄ°(@pBv?Éò¶Ú¦a¡QÕ4‰0S©ÎMè.IËã·x ‚¬¯eJ{F.3èŠ“¿‰eÔjítÕI—€êúOÛK^}Vı·T>ÓÊ rCL[µŞO×ÂaFãyš–¾_…\àÛ™`ZÜñ£ÂWÌ›fóĞ+º¾è%é|k˜Óé÷kYÑeÃÂwLÅ‰vîWáî˜l¥Œs|äáoK*³}G£FäoµUSˆ—İ={Ş™´§&ªT`¶„!}õ©R­™ÁÁ8K‡ß:Â·<¯9r“êèá†o©n²œ¨Õ»–‘­²ªâSubKd¨!jÈö¤±7ğ?Ñ	È„Î1ü<Øµ…5ÒYPôB×{õ®z8ã“«ÿCê„x­UQkÛ@ŞkîW¨†;sívt
+[š1úÖ–=Û>Åõfß™ó9k)ùï“îì4kËºÑA¡>İé“ôé“’×:‡Ãã£w/Ú¬ø‘•K­J}ª•ÂÂ
+Q5­6B1	
+­,^Û@L–ËÆ@°B”9y¥MƒÆhC7­}”:iIæ‰6eê¾÷¥©Öhü_?ù(Õ­­´ê	aoÚ!½ÅüŒr1«¬@¨¶_·bò	í‡¶=­+T6Œ œº¸É"³YuÃÔåĞ#*A›È¹\vh9¼„ÎšJ•±bÕ«>ãOGvÿs ”ÚŞ¨Ñr»ô|·Ô–.<J(sÊ’©[Ì#øç‚8d‡Eí`v%Ús
+©ÖÂµ‹/©7ÔTnô…ö™ÉÿòëY£8y$¨jåPöN@U5¥£ &›mñ>î¶ác119Ë,<¯GÿŸ•Q(Ï¥b‹ó§úïui8Ò`œ;•Æ0¢<­—õCİ3!¾+_ü„±†aK¼Sñ˜Ô7$‚ğ~DÖ’½¡ÈT5ûÒŞÉ·Ê^]ĞĞ½e/g›Ó’(î•£¦¼%Ò¥V’$®ĞP¨´áYHN½PCÖéxÈüÉø‘§é¼Txİ’ÚQºáiÿÈ}¹şŞİA‚)åî&ŒXLS8kÚZ9`¯ªXÀ¼µÀj?2n×ÓÄóÆ·Ä+dJ“\™³*#†øCÒß÷¾³A[ÓÒ»Òµ$ÊØ[Ñî8R`ĞİJøIM€¬°}VmpŸœ‹@˜ÃBz5ÔÀ£K5ÜMü pœËüugÖ³4•¸6˜QÄÙ²¯qY•Æa½|{pøæhoï}CÖf´îÓëd­ºæ¸.·?
+mÄig‰Ì Ø)}1çû»í82ì·#Ëõ.Cd.váFÛFü-¾LLxRKœ0Í6œ‚åŒ"0vwOÃrÿğ8±jn?…;B%„àÕûU	¢ìÚîÛjvºœ ¦ŸZ+ÁåPJZ3ZÓ¢ú÷lƒ.ßŠïÆ¦ÏYÔFb Xç8çG¹ĞºEäş÷/øÄ(HÚ/à–Pàñ³¨!’ß+ì¢Ã†¡×º)ŞÏ«ÉñÕ˜½"$w:–K³Ñ’Òz…>eúËˆıÔì7­È]•÷Ññ¨Œèÿ”ÂiPVmqª9øÍ(ú<E/Ü­‹kÒbî{& ·M5‡©ÿLŠ„V=või~X˜x²ÂéCØŞ
+Èó¹°raõa©ûÕpÜ=Ÿ¦uñOÓÏq;²I±q\ÔıeÏ[MÜóŞ­Ş“˜xÊKB™Š5ôNñÁÖ\ºŠŠ¾SBªV
+}jà¡Le€LbP=æymq/ıeàcöY³Ç¬7˜lz’_OV˜G22¶ÏŞr¤–RzgìB/FÒL_ôívıP¢Üz>û‘aäÃ{mrŒ«—öÒ÷•ô#eÔñ.ß‹/ÿÀDx+)JMU01f040031QÈÍÏKÏOÎÏËKM.ÑKÏg¨‰7Z3%I·Ã®ãÿS9– §ÎÍx+)JMU06g040031QğÉOOO-ÒKÏgÈöìÖğ–k‘ú1}JãÁğÊyá+³:mîx•MsÓ0†¹Z¿Bø”0ÔB”é¡0ÓCZ¦®l)F%–Œ$—	Lÿ;+Y²å$zèD«Õ³¯¼z¥b#|üêİÉ³†”ßIÅ05!^7R<CÉrùA)œ®£d,êš)%UŠ’Ôğš¥~TÜ|k‹¬”õ¢’GÍ†l+%[AdÃ)1]z%³ZŠJÒ"“ªZ¸ßGTñG¦…–bÑ(^sãÍ2Û†áOJ>°Ò|ôÕ±6ª-ş’ë+<şëWg·…]	+‹=MsN_J ³º1Û?¸ §é
+%?À¦)M'`GÖ©Y§ÄrQTzEa¥€Ü]š‹î‹fjĞ”ii-¤FºÂ ·ª"‚ÿ"†Ká„Mk‚ô©y,lÀ¡#w€v{äÂŒv
+¿ÙptrårÃ~wÃôRÂ)³¼iµıj8t6wâ€½TŒF/¶Aàô—,»Ô¼èÏIP·" ¬²Ïğ/úm‡…RmQPKIùšG²¦Umˆ6yíó#mq("öê¦Å‰ƒÄ! ^ëóÒ²ßÜt—¹Î‰Ë»+ôäí|Ç~´L›ÈÆÁ€Ô—ğßñÉaÏùÛ…¦
+¸\±ØÒî´[èab|ÀÇn<Lun"÷¨Áqşné‡‡Y»Şñõÿì‚;Ç¥x`KÁäúì5>Æoğ[|bJ'?Â¿Ìƒı²¸Hô‰‡nêF
+Í¢vŞbZ})©;2acİ;ÌY…İhÉ´¶NĞgú9Hm®˜!|££šñ—Ã9í£ÑM6œ©İğPĞ¯ß©¾#Z|Ìö'\¡u+Jüµ{(Ù¬ÁŞ#süÂ=½ÙyÓÀ,•}ôBÏñéYè¿TÙû9ƒ3ákos4Ç²{÷^Îšù{7õü¾±¤D1Ó*»@¸ ÔWvÕf)°m:ø5£ä	…%@€ü>ø»[x+)JMU05f040031Q(È/.qKMMIJLÎvÎÏ+)ÊÏÉI-ÒKÏgXñÕ¹%èZÀBå&›¾œbŒŒ vtx¥U]oÓ0å5ş&“3¥î˜@H•ö°{H‚gÇ¹íÌ²88ÎÊTõ¿soâ4ëÚÂ€J•â{Ïñ9'NVØŒ¿z{|ô¢RúVÍŸÙÒ;[à3w•uÅPj››r>ş^Û2fQîŞhàñ Ï°v|İÍàÚ0—{KãüøÆû*f8˜ÓdRÛ»1¶zÏmæ@İ‚‹YÂ˜¨€ ÿ>´èğÚ»F{¾À	öO‘F`qÁ"ñöw¸gÆéÆøi‡ÇV›pT>À]pSzp3…‡DH„8-ŠU-Ô•-kàt.yFßœÁš”;øÑ@íùaXmG	‹Úõ~³Xì.®½òM}fs 
+)Ï•W™å*!â³¦Ôü,vJ%zw~#PÊQ ½Ú${<@%øÆ•»×—pÂÃ¡Lğ¿Zszwi‹øß“U÷Êñ>•WÁ¢ìÍÃRˆ%ª÷0ÕàĞÍÖ!9µùC"»Yqğ¤	¦3çøä„S»¯ª0hˆ­m‘™qÚøò„—¦ J‘–›Ö÷ñIùë££”PÃsçúh,¯×˜t;º‰K¨k5‡	§*çáp1&"
+¶°³õ'¥ä¤½Ø¨k©3yştCÔ1E"ábõå*%êÖ%-íàµ–‚´áÑöÙ‘#B¡>K‡7Ô¡İñD‡…ä³N$[bì—ş˜ k5¼YûSºéã¿¾Â¨.‹ò#(Š_"Oó\Ätù@éG_ğŒS«ª*ŒVŞØ²»vÑçG5×àE|ª5fbî­šc£ÏÎÌMI-ãçÖ\‚¿±yıwEÿuÑ6½ç©Õ4h1Ü~¤şE=§Ï*µHd÷((Ûä×/'gOx-Œ±
+Â@D­óv¢‚v¶¢… ØøŞ%›daÍ†»=c¿İ;´™˜Çó¢»Ã~±Ä‘˜"ZƒvÁ=#ÜĞ`”Ôñ«Õ–ŞôËO®F$gÔ2ga_UKÜ)|1ÍkøÄÒ`bëñèV¾MıÈ|™¿%“A[XOÈL­/
+®#˜ª¬Gª¹åÚ‰Ì˜z"ı•W6ºœÎÙ¦Éª/§£BxU=kÃ0†»ú~ÅáÉÅLC:ÔĞ1Cã½ÈÊE9bëŒ>(¡ø¿WN›¦Ñ$Ş{8=¯úAz¬7õÓ¤ôYB-öÈ€ÇI\À²<ğH9¤‹ápŠ}¥e\{±—µ‘Ş‘:“Ë¡8F«±e§#‡×Ÿ¼½.+J\ı¡Õ#_y
+­ñØlñÎíÓd;5Rƒéäƒ¶Mœòç4é’›ÄĞàW¸ˆV{JËìÔáÒIçxjp±+´Dü¿GÚkPb/2,*Yæ(DgÓ7,dÕIPÃ›â!:òø²Å:1sZ>Ã¼ïèó±\qkVÂß‘xix•MsÓ0†¹Ú¿Bø”0Ô‡–é¡0ÓCZ¦®l)F%–„$—	Lÿ;+Y²å$zèD«Õ³¯¼z¥r#Jtüêää™ÄÕw\SDŒHSÖH¡š¥ÉrùA)”I¡ÍGJI	Y‹¦¡J	•¥IfXC³~ÔÌ|kË¼Í¢Grƒ·µ-'‹G¼a›.½y#x-H™U/Üï#¢Ø#U‹R¾Š5ÌÀ8Kçij¶’¢OJ<Ğª¯´QmeĞï4¹¾Bã¿~u~[Ú5°²ØÓ¬`ä¥ 2m¤ÙfèÁÉViâùlš";) ˆ82°npC;e –ñz¤Ò+
++9äîÒ\p_4Uƒ. LKk!5Ò† ¹U5æì6Lp'lZô¤O-baû çáĞnŒ›ÑNaà7»öG§P.7ìw7A/œ2Ë›VÛ¯†Cgs÷¨!ØKE±¡äbNÉªK-ÊşœD‘uËÊz ÿÿB ßvX(xĞE µ„­Y$kZÕkS4>?Ò‡"b¯nZÜ˜8Hì‰âµ>¯¬!ûÍMw™é»Ü°Û!°JŸ¼ïè–jÙ8ø¾ã;>9ì9»ĞÓL—)[Úv=LŒøØ‡©ÎAä58Îß-ığ0k×;ş£şŸ]Pç¸lÁ©XŸ½FÇèz‹ŞÙÆ…ÁIãğ/ó ¿,.}â¡›Z
+®iÔÎ{ƒM«/qG&TínÜaÎ*ìFKªµ}xeú9Hm®¨Ál££šñWÀ9í£ÑM6œ©İğPĞ¯ß©¾#Z|Ìö'\¡uË+ôµ{(éL"ï‘9záßü\Jx……²^è9:=ı*¿¡?gğ`&làmæh~ïŞË™œ¿wSÏÏgKJ5­â¨«„L|eWm–A Ù¦ƒ_³yš<¥a	 # “º½ñx+)JMU05²d040031QĞKÍ+c8å÷|™§ÃÒˆç•Œ}HtğOœ
+“OÏ,ÉLÏË/Jeøx°ñÍœ˜IB®L5Ù®zç^NJN11 ½²âäü”T—kÿ?qÍa¯O	—»enèÎ%QáœŸWR”Ÿ““ZÄWvlF¾ÿú;Ox™ÕrRWÕô¶qËA-rutñuÕËMaàYâ¶jç…ykÚT·ÚÙş¸•&Yv$bRPjA~qfI~Q%ÃA÷7¿-¶Ò9!yöƒœL·ù›ÿB§•e&§2X§ÆN(úóÈÏ¨ç„_zÁ“'™×z *’3‹’K3K’ŠR³ÚøZ¡rËÕ§
+çè§Íşsûª|ıyˆÂ”’|†é{ø]Z£+ëÊÙ#µš#2èÈ?¨“ÓóõróSz^=}lµµ<¿èÓ9ƒfÖR'Y¿Ä4„ŠâÒ\„í»¢qçÜºªöáK×û™K!6ää§§ğp2“Á™Sê%§j\=~ÿ®ZÄÁÅP#r3óôÒó¸Qßùú/Ï™Åõó~;®iŸlôñÄŒÜÜÔ¢¢ü"‹||Ë½ÿÇ|iÊ±û÷±sò„ªÈÏKÏOÎÏËKM.a¸ÇôæÉ‡
+ïF‹¶İæëLZ[…yVDÜ»x­RANÃ0ä¿bÉ)AUàª”PU¢=ÀÜt,Œl§¨ªúwÖ®“¶¢pâ¸ëÙÙ™Y/¥^ÂíİİEË«wŞ ¼¢Y‹
+­62–¤hŒ66e‰ÁV[á´Ù@Z#®–4tı24	qh¯œ¦z>ÖMƒæ/C#e9ckn€JèQÅÌ˜Û´Oè¦qITÖ™®r°İKƒ"‚H‘4c»SÿYf ”CSó
+=MŞKÙo²™ÁÏ­2Pôİ²+_Ÿl±­VGâÉıÂºS,ğë§rbmõ_zósvƒO×uæqëÇr7ìÎìd ş‹”KúH&ÜñàÆ%ØÂ«¡¸\õÖ†$éĞ‰¨}LpY‚2ğĞg
+Î¨Ú‚¢ËVÌÑZŞ`Î
+ÕÏJTYÏë‡™ ãBÚÊnü5£M5İ]9˜êN­ÒÈe³¼HÊôc]xUËjÃ0E»Õ|Åà•ŠC	ÙÒEYfÑø$yâŠØ£%ÿ{¥´i­ÄÃè\©‘n¶/O³Ôg9j¶'3 ˜if°Q3Qé2˜ğU­yZ{¶—õÀÊ‘<“+ 8E«±5NGŞ~òöº¬¬põ‡Ö~ğ‚±ƒÇf‡wîø›&@äD¦Sì‰z•T}ñœò.™qnq…Y³>R*ĞçÙ;ÉşÒqçÌÜ`v+5Gü¿'ÚkP¡b³ˆBt6}B&ëƒ÷ÒŒÑ‘Ç×n³¤åÜÈ»ï>«•·^,ğE=w?x+)JMU05c040031Q(È/.qKMMIJLÎöÉOOO-
+N-*ËLNÕKÏgÈöìÖğ–k‘ú1}JãÁğÊyá+³®X‹x¥»Ã  ;óŞ+E<B0RUõW°›„ˆ~3vïx7œ.ÕRÖvœn½1ƒxÔqäQKIÌÎzÁæD(Î£0a°iNj§Æ[]9¢óÁr´Â³ÉVD\¦ÉäÙ:Eg_jƒcác¡¾´u(ğø¥}è¨Ò‡TËLĞèMœp‚»öN«Ë^£ÿH¨ıà3WH53Ú÷u{«/u‘Q5ff204448f1891cc0dc74af523a17f48078a5fa8c
+# pack-refs with: peeled fully-peeled sorted 
+260a1854e22054bf5470db71102984334625131f refs/remotes/origin/local
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f refs/remotes/origin/master
+ff204448f1891cc0dc74af523a17f48078a5fa8c
+abf5d8d9393a96a55ab32dbe81c55881d6233d8f
+ref: refs/remotes/origin/master
+ff204448f1891cc0dc74af523a17f48078a5fa8c
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+package config
+
+import (
+	"time"
+
+	"github.com/sony/gobreaker"
+)
+
+func CircuitBreakerConfig() *gobreaker.CircuitBreaker {
+	settings := gobreaker.Settings{
+		Name:    "Feedbacks",
+		Timeout: 5 * time.Second,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			return counts.TotalFailures >= 3
+		},
+	}
+	return gobreaker.NewCircuitBreaker(settings)
+}
+package Controller
+
+import (
+	"encoding/json"
+	service "feedback/Service"
+	"feedback/dto"
+	"net/http"
+
+	"github.com/sony/gobreaker"
+)
+
+type GetFeedbackController struct {
+	service service.GetFeedBackServiceI
+	cb      *gobreaker.CircuitBreaker
+}
+
+type GetFeedBackControllerI interface {
+	GetAllFeedbacks(response http.ResponseWriter, request *http.Request)
+	WriteResponse(w http.ResponseWriter, statusCode int, data interface{})
+}
+
+func NewGetFeedbackController(service service.GetFeedBackServiceI, cb *gobreaker.CircuitBreaker) GetFeedbackController {
+	return GetFeedbackController{service: service, cb: cb}
+}
+
+func (c GetFeedbackController) GetAllFeedbacks(response http.ResponseWriter, request *http.Request) {
+	var feedbackRequest dto.Feedback
+
+	json.NewDecoder(request.Body).Decode(&feedbackRequest)
+
+	err := dto.Validate(feedbackRequest)
+	if err != nil {
+		c.WriteResponse(response, 400, &dto.ErrResponse{StatusCode: 400, StatusMessage: "Bad Request"})
+		return
+	}
+
+	Feedbackdata, serviceErr := c.cb.Execute(func() (interface{}, error) {
+		return c.service.GetAllFeedbacks(feedbackRequest)
+	})
+
+	if serviceErr != nil {
+		c.WriteResponse(response, 500, &dto.ErrResponse{StatusCode: 500, StatusMessage: serviceErr.Error()})
+		return
+	}
+
+	c.WriteResponse(response, 200, Feedbackdata)
+}
+
+func (c GetFeedbackController) WriteResponse(w http.ResponseWriter, statusCode int, data interface{}) {
+
+	w.Header().Add("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+
+	json.NewEncoder(w).Encode(data)
+}
+package Controller
+
+import (
+	"encoding/json"
+	service "feedback/Service"
+	"feedback/dto"
+	MMLogger "feedback/logger"
+	"fmt"
+	"net/http"
+
+	"github.com/sony/gobreaker"
+)
+
+var log *MMLogger.Logger
+
+type PostFeedbackController struct {
+	service service.PostFeedBackServiceI
+	cb      *gobreaker.CircuitBreaker
+}
+
+type PostFeedBackControllerI interface {
+	PostFeedback(w http.ResponseWriter, r *http.Request)
+	WriteResponse(w http.ResponseWriter, statusCode int, data interface{})
+}
+
+func NewPostFeedbackController(service service.PostFeedBackServiceI, cb *gobreaker.CircuitBreaker) PostFeedbackController {
+	return PostFeedbackController{service: service, cb: cb}
+}
+
+// PC_NO_1.14
+func (c *PostFeedbackController) PostFeedback(w http.ResponseWriter, r *http.Request) {
+	var feedback dto.Request
+
+	json.NewDecoder(r.Body).Decode(&feedback)
+	//PC_NO_1.17
+	err := dto.PostValidate(feedback)
+	if err != nil {
+		c.WriteResponse(w, 400, &dto.PostResponse{StatusCode: 400, StatusMessage: "Bad Request"})
+		return
+	}
+
+	result, serviceErr := c.cb.Execute(func() (interface{}, error) {
+		return c.service.PostFeedback(feedback)
+
+	})
+	//PC_NO_1.48 - PC_NO_1.50
+	if serviceErr != nil {
+		c.WriteResponse(w, 500, serviceErr.Error())
+		return
+	}
+
+	fmt.Println(result)
+	c.WriteResponse(w, 200, result)
+}
+
+func (c PostFeedbackController) WriteResponse(w http.ResponseWriter, statusCode int, data interface{}) {
+
+	w.Header().Add("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "*")
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	out := data
+	if statusCode == 500 {
+		out = map[string]interface{}{"StatusCode": statusCode, "StatusMessage": data}
+	}
+
+	json.NewEncoder(w).Encode(out)
+}
+package dto
+
+import (
+	MMErr "feedback/mmerror"
+
+	"github.com/go-playground/validator"
+)
+
+type FeedbackSort struct {
+	Column string `json:"column,omitempty"`
+	Order  string `json:"order,omitempty"`
+}
+
+type FeedbackFilterObj struct {
+	ProjectName      string `json:"projectName,omitempty"`
+	OrganizationName string `json:"organizationName,omitempty"`
+	Rating           int    `json:"rating,omitempty"`
+	FromDate         string `json:"fromDate,omitempty"`
+	EndDate          string `json:"endDate,omitempty"`
+}
+
+type Feedback struct {
+	Limit               int               `json:"limit,omitempty"`
+	Offset              int               `json:"offset,omitempty"`
+	FeedbackSearchField string            `json:"feedbackSearchField,omitempty"`
+	FeedbackSort        FeedbackSort      `json:"feedbackSort,omitempty"`
+	FeedbackFilterObj   FeedbackFilterObj `json:"feedbackFilterObj,omitempty"`
+}
+
+type ProjectFeedback struct {
+	Project_Name     string `bson:"project_name" json:"projectName"`
+	UserName         string `bson:"user_name" json:"userName"`
+	Organization     string `bson:"organization_name" json:"organization"`
+	Submitted_On     string `bson:"created_on" json:"submittedOn"`
+	Feedback_rating  int    `bson:"feedback_rating" json:"feedbackRating"`
+	Feedback_comment string `bson:"feedback_comment" json:"feedbackComment"`
+}
+
+type DistinctValues struct {
+	Feedback_rating   []int    `bson:"distinct_feedback_ratings" json:"feedbackRating"`
+	ProjectName       []string `bson:"distinct_project_names" json:"projectNames"`
+	Organization_name []string `bson:"distinct_organization_names" json:"organization_name"`
+}
+
+type ProjectNames struct {
+	ProjectName []string `bson:"distinctValues" json:"projectNames"`
+}
+
+type OrganizationDetails struct {
+	Organization_name string `bson:"organization_name" json:"organization_name"`
+}
+
+type FeedbackRating struct {
+	Feedback_rating int `bson:"feedback_rating" json:"feedbackRating"`
+}
+type Ratings struct {
+	Rating []int `bson:"distinctValues"`
+}
+
+type TotalCount struct {
+	TotalCount int `bson:"total_count"`
+}
+
+type GetFeedBackResponse struct {
+	FeedbackDetails []ProjectFeedback `json:"feedbackDetails"`
+	ProjectNames    []string          `bson:"user_name" json:"projectName"`
+	Orgnames        []string          `json:"organizationName"`
+	TotalCount      int               `json:"totalCount"`
+	Ratings         []int             `json:"ratings"`
+}
+
+type ErrResponse struct {
+	StatusCode    int    `json:"StatusCode"`
+	StatusMessage string `json:"StatusMessage"`
+}
+
+func Validate(p Feedback) *MMErr.AppError {
+	validate := validator.New()
+
+	if err := validate.Struct(p); err != nil {
+		return MMErr.NewBadRequestError("Bad request")
+	}
+	return nil
+}
+package dto
+
+import (
+	MMErr "feedback/mmerror"
+	"time"
+
+	"github.com/go-playground/validator"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type PostProjectFeedback struct {
+	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	ProjectID        primitive.ObjectID `bson:"project_id" json:"project_id" `
+	ProjectName      string             `bson:"project_name" json:"project_name"`
+	UserID           primitive.ObjectID `bson:"user_id" json:"user_id"`
+	OrganizationName string             `bson:"organization_name" json:"organization_name"`
+	FeedbackRating   int                `bson:"feedback_rating" json:"feedback_rating"`
+	FeedbackComment  string             `bson:"feedback_comment" json:"feedback_comment"`
+	CreatedBy        primitive.ObjectID `bson:"created_by" json:"created_by"`
+	CreatedOn        time.Time          `bson:"created_on" json:"created_on"`
+	ModifiedBy       primitive.ObjectID `bson:"last_modified_by" json:"modified_by"`
+	ModifiedOn       time.Time          `bson:"last_modified_on" json:"modified_on"`
+	IsActive         int                `bson:"is_active" json:"is_active"`
+}
+
+type Request struct {
+	ProjectId       string `bson:"project_id" json:"project_id" validate:"required"`
+	ProjectName     string `bson:"project_name" json:"project_name" validate:"required"`
+	UserId          string `bson:"user_id" json:"user_id" validate:"required"`
+	FeedbackRating  int    `bson:"feedback_rating" json:"feedback Rating" validate:"oneof=1 2 3 4 5"`
+	FeedbackComment string `bson:"feedback_comment" json:"feedback Comment" validate:"required"`
+}
+
+type PostResponse struct {
+	StatusCode    int    `json:"StatusCode"`
+	StatusMessage string `json:"StatusMessage"`
+}
+
+type PostUserDetails struct {
+	Organization_ID primitive.ObjectID `bson:"organization_id" json:"organization_id"`
+}
+
+type OrgDetails struct {
+	OrganizationName string `bson:"organization_name" json:"organization_name"`
+}
+
+func PostValidate(p Request) *MMErr.AppError {
+	validate := validator.New()
+
+	if err := validate.Struct(p); err != nil {
+		return MMErr.NewBadRequestError("Bad request")
+	}
+	return nil
+}
+module feedback
+
+go 1.21.1
+
+require (
+	github.com/gorilla/mux v1.8.1
+	github.com/joho/godotenv v1.5.1
+	go.mongodb.org/mongo-driver v1.14.0
+)
+
+require (
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
+)
+
+require (
+	github.com/go-playground/validator v9.31.0+incompatible
+	github.com/golang/snappy v0.0.1 // indirect
+	github.com/klauspost/compress v1.17.0 // indirect
+	github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe // indirect
+	github.com/sony/gobreaker v0.5.0
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.1.2 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d // indirect
+	golang.org/x/crypto v0.17.0 // indirect
+	golang.org/x/sync v0.1.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
+)
+github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
+github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
+github.com/go-playground/locales v0.14.1 h1:EWaQ/wswjilfKLTECiXz7Rh+3BjFhfDFKv/oXslEjJA=
+github.com/go-playground/locales v0.14.1/go.mod h1:hxrqLVvrK65+Rwrd5Fc6F2O76J/NuW9t0sjnWqG1slY=
+github.com/go-playground/universal-translator v0.18.1 h1:Bcnm0ZwsGyWbCzImXv+pAJnYK9S473LQFuzCbDbfSFY=
+github.com/go-playground/universal-translator v0.18.1/go.mod h1:xekY+UJKNuX9WP91TpwSH2VMlDf28Uj24BCp08ZFTUY=
+github.com/go-playground/validator v9.31.0+incompatible h1:UA72EPEogEnq76ehGdEDp4Mit+3FDh548oRqwVgNsHA=
+github.com/go-playground/validator v9.31.0+incompatible/go.mod h1:yrEkQXlcI+PugkyDjY2bRrL/UBU4f3rvrgkN3V8JEig=
+github.com/golang/snappy v0.0.1 h1:Qgr9rKW7uDUkrbSmQeiDsGa8SjGyCOGtuasMWwvp2P4=
+github.com/golang/snappy v0.0.1/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEWrmP2Q=
+github.com/google/go-cmp v0.5.2 h1:X2ev0eStA3AbceY54o37/0PQ/UWqKEiiO2dKL5OPaFM=
+github.com/google/go-cmp v0.5.2/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
+github.com/gorilla/mux v1.8.1 h1:TuBL49tXwgrFYWhqrNgrUNEY92u81SPhu7sTdzQEiWY=
+github.com/gorilla/mux v1.8.1/go.mod h1:AKf9I4AEqPTmMytcMc0KkNouC66V3BtZ4qD5fmWSiMQ=
+github.com/joho/godotenv v1.5.1 h1:7eLL/+HRGLY0ldzfGMeQkb7vMd0as4CfYvUVzLqw0N0=
+github.com/joho/godotenv v1.5.1/go.mod h1:f4LDr5Voq0i2e/R5DDNOoa2zzDfwtkZa6DnEwAbqwq4=
+github.com/klauspost/compress v1.17.0 h1:Rnbp4K9EjcDuVuHtd0dgA4qNuv9yKDYKK1ulpJwgrqM=
+github.com/klauspost/compress v1.17.0/go.mod h1:ntbaceVETuRiXiv4DpjP66DpAtAGkEQskQzEyD//IeE=
+github.com/leodido/go-urn v1.4.0 h1:WT9HwE9SGECu3lg4d/dIA+jxlljEa1/ffXKmRjqdmIQ=
+github.com/leodido/go-urn v1.4.0/go.mod h1:bvxc+MVxLKB4z00jd1z+Dvzr47oO32F/QSNjSBOlFxI=
+github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe h1:iruDEfMl2E6fbMZ9s0scYfZQ84/6SPL6zC8ACM2oIL0=
+github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe/go.mod h1:wL8QJuTMNUDYhXwkmfOly8iTdp5TEcJFWZD2D7SIkUc=
+github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
+github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
+github.com/sony/gobreaker v0.5.0 h1:dRCvqm0P490vZPmy7ppEk2qCnCieBooFJ+YoXGYB+yg=
+github.com/sony/gobreaker v0.5.0/go.mod h1:ZKptC7FHNvhBz7dN2LGjPVBz2sZJmc0/PkyDJOjmxWY=
+github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
+github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
+github.com/stretchr/testify v1.8.4 h1:CcVxjf3Q8PM0mHUKJCdn+eZZtm5yQwehR5yeSVQQcUk=
+github.com/stretchr/testify v1.8.4/go.mod h1:sz/lmYIOXD/1dqDmKjjqLyZ2RngseejIcXlSw2iwfAo=
+github.com/xdg-go/pbkdf2 v1.0.0 h1:Su7DPu48wXMwC3bs7MCNG+z4FhcyEuz5dlvchbq0B0c=
+github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=
+github.com/xdg-go/scram v1.1.2 h1:FHX5I5B4i4hKRVRBCFRxq1iQRej7WO3hhBuJf+UUySY=
+github.com/xdg-go/scram v1.1.2/go.mod h1:RT/sEzTbU5y00aCK8UOx6R7YryM0iF1N2MOmC3kKLN4=
+github.com/xdg-go/stringprep v1.0.4 h1:XLI/Ng3O1Atzq0oBs3TWm+5ZVgkq2aqdlvP9JtoZ6c8=
+github.com/xdg-go/stringprep v1.0.4/go.mod h1:mPGuuIYwz7CmR2bT9j4GbQqutWS1zV24gijq1dTyGkM=
+github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d h1:splanxYIlg+5LfHAM6xpdFEAYOk8iySO56hMFq6uLyA=
+github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d/go.mod h1:rHwXgn7JulP+udvsHwJoVG1YGAP6VLg4y9I5dyZdqmA=
+github.com/yuin/goldmark v1.4.13/go.mod h1:6yULJ656Px+3vBD8DxQVa3kxgyrAnzto9xy5taEt/CY=
+go.mongodb.org/mongo-driver v1.14.0 h1:P98w8egYRjYe3XDjxhYJagTokP/H6HzlsnojRgZRd80=
+go.mongodb.org/mongo-driver v1.14.0/go.mod h1:Vzb0Mk/pa7e6cWw85R4F/endUC3u0U9jGcNU603k65c=
+golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=
+golang.org/x/crypto v0.0.0-20210921155107-089bfa567519/go.mod h1:GvvjBRRGRdwPK5ydBHafDWAxML/pGHZbMvKqRZ5+Abc=
+golang.org/x/crypto v0.17.0 h1:r8bRNjWL3GshPW3gkd+RpvzWrZAwPS49OmTGZ/uhM4k=
+golang.org/x/crypto v0.17.0/go.mod h1:gCAAfMLgwOJRpTjQ2zCCt2OcSfYMTeZVSRtQlPC7Nq4=
+golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4/go.mod h1:jJ57K6gSWd91VN4djpZkiMVwK6gcyfeH4XE8wZrZaV4=
+golang.org/x/net v0.0.0-20190620200207-3b0461eec859/go.mod h1:z5CRVTTTmAJ677TzLLGU+0bjPO0LkuOLi4/5GtJWs/s=
+golang.org/x/net v0.0.0-20210226172049-e18ecbb05110/go.mod h1:m0MpNAwzfU5UDzcl9v0D8zg8gWTRqZa9RBIspLL5mdg=
+golang.org/x/net v0.0.0-20220722155237-a158d28d115b/go.mod h1:XRhObCWvk6IyKnWLug+ECip1KBveYUHfp+8e9klMJ9c=
+golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sync v0.1.0 h1:wsuoTGHzEhffawBOhz5CYhcrV4IdKZbEyZjBMuTp12o=
+golang.org/x/sync v0.1.0/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
+golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
+golang.org/x/sys v0.0.0-20201119102817-f84b799fce68/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
+golang.org/x/sys v0.0.0-20210615035016-665e8c7367d1/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=
+golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1/go.mod h1:bj7SfCRtBDWHUb9snDiAeCFNEtKQo2Wmx5Cou7ajbmo=
+golang.org/x/term v0.0.0-20210927222741-03fcf44c2211/go.mod h1:jbD1KX2456YbFQfuXm/mYQcufACuNUgVhRMnK/tPxf8=
+golang.org/x/text v0.3.0/go.mod h1:NqM8EUOU14njkJ3fqMW+pc6Ldnwhi/IjpwHt7yyuwOQ=
+golang.org/x/text v0.3.3/go.mod h1:5Zoc/QRtKVWzQhOtBMvqHzDpF6irO9z98xDceosuGiQ=
+golang.org/x/text v0.3.7/go.mod h1:u+2+/6zg+i71rQMx5EYifcz6MCKuco9NR6JIITiCfzQ=
+golang.org/x/text v0.3.8/go.mod h1:E6s5w1FMmriuDzIBO73fBruAKo1PCIq6d2Q6DHfQ8WQ=
+golang.org/x/text v0.14.0 h1:ScX5w1eTa3QqT8oi6+ziP7dTV1S2+ALU0bI+0zXKWiQ=
+golang.org/x/text v0.14.0/go.mod h1:18ZOQIKpY8NJVqYksKHtTdi31H5itFRjB5/qKTNYzSU=
+golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+golang.org/x/tools v0.0.0-20191119224855-298f0cb1881e/go.mod h1:b+2E5dAYhXwXZwtnZ6UAqBI28+e2cm9otk0dWdXHAEo=
+golang.org/x/tools v0.1.12/go.mod h1:hNGJHUnrk76NpqgfD5Aqm5Crs+Hm0VOH/i9J2+nxYbc=
+golang.org/x/xerrors v0.0.0-20190717185122-a985d3407aa7/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 h1:E7g+9GITq07hpfrRu66IVDexMakfv52eLZ2CXBWiKr4=
+golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543/go.mod h1:I/5z698sn9Ka8TeJc9MKroUUfqBBauWjQqLJ2OPfmY0=
+gopkg.in/go-playground/assert.v1 v1.2.1 h1:xoYuJVE7KT85PYWrN730RguIQO0ePzVRfFMXadIrXTM=
+gopkg.in/go-playground/assert.v1 v1.2.1/go.mod h1:9RXL0bg/zibRAgZUYszZSwO/z8Y/a8bDuhia5mkpMnE=
+gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
+gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=
+package MMLogger
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+func (l *Logger) log(level LogLevel, logMessage interface{}, args ...interface{}) {
+	if level > l.level {
+		return
+	}
+	var message string
+	switch m := logMessage.(type) {
+	case string:
+		message = fmt.Sprintf(m, args...)
+	case fmt.Stringer:
+		message = m.String()
+	default:
+		v := reflect.ValueOf(m)
+		if v.Kind() == reflect.Struct {
+			var b strings.Builder
+			b.WriteString("{")
+			for i := 0; i < v.NumField(); i++ {
+				if i > 0 {
+					b.WriteString(", ")
+				}
+				fmt.Fprintf(&b, "%s: %v", v.Type().Field(i).Name, v.Field(i))
+			}
+			b.WriteString("}")
+			message = b.String()
+		} else {
+			message = fmt.Sprintf("%+v", m)
+		}
+	}
+	message = l.maskSensitiveWords(message)
+	if len(message) > maxMessageLength {
+		message = message[:maxMessageLength] + " [log trimmed]"
+	}
+	timestamp := time.Now().Format("2024-02-28 15:04:05")
+	logLevel := [...]string{"INFO", "DEBUG", "ERROR"}[level]
+	logMessageFmt := fmt.Sprintf("TimeStamp: [%s] LogLevel: [%s] LogMessage: %s\n", timestamp, logLevel, message)
+	fmt.Print(logMessageFmt)
+}
+
+func (l *Logger) Info(format interface{}, args ...interface{}) {
+	l.log(INFO, format, args...)
+}
+func (l *Logger) Debug(format interface{}, args ...interface{}) {
+	l.log(DEBUG, format, args...)
+}
+
+func (l *Logger) Error(format interface{}, args ...interface{}) {
+	l.log(ERROR, format, args...)
+}
+
+///
+
+const maxMessageLength = 1000
+
+type LogLevel int64
+
+const (
+	INFO LogLevel = iota
+	DEBUG
+	ERROR
+)
+
+type Logger struct {
+	level       LogLevel
+	wordsToMask []string
+}
+
+func NewLogger() *Logger {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
+	var logStr = os.Getenv("Log_Level")
+	logInt, _ := strconv.ParseInt(logStr, 10, 64)
+	var loglevel = LogLevel(logInt)
+	// level:= loglevel
+	switch loglevel {
+	case INFO:
+		loglevel = INFO
+
+	case DEBUG:
+		loglevel = DEBUG
+
+	case ERROR:
+		loglevel = ERROR
+
+	default:
+		loglevel = INFO
+	}
+	wordsToMask := []string{"Hello", "World", "PlanCost"}
+	return &Logger{
+		level:       loglevel,
+		wordsToMask: wordsToMask,
+	}
+
+}
+
+func (l *Logger) SetLevel(level LogLevel) {
+	l.level = level
+}
+
+//
+
+func (l *Logger) maskSensitiveWords(message string) string {
+	maskedMessage := message
+	for _, word := range l.wordsToMask {
+		maskedMessage = strings.Replace(maskedMessage, word, strings.Repeat("*", len(word)), -1)
+	}
+	return maskedMessage
+}
+package main
+
+import (
+	controller "feedback/Controller"
+	repository "feedback/Repository"
+	service "feedback/Service"
+	config "feedback/circuitbreaker"
+	MongoConnect "feedback/mongoconnect"
+	"fmt"
+	"net/http"
+
+	"github.com/gorilla/mux"
+)
+
+func main() {
+	Database := MongoConnect.MongoDB{}
+	//post
+	PostRepository := repository.NewPostFeedbackRepository(&Database)
+	PostService := service.NewPostFeedbackService(&PostRepository)
+	circuitBreaker := config.CircuitBreakerConfig()
+	PostController := controller.NewPostFeedbackController(&PostService, circuitBreaker)
+
+	//get
+	Repository := repository.NewGetFeedbackRepository(&Database)
+	GetService := service.NewGetFeedbackService(Repository)
+	cb := config.CircuitBreakerConfig()
+
+	GetController := controller.NewGetFeedbackController(GetService, cb)
+
+	router := mux.NewRouter()
+	//
+	router.HandleFunc("/postfeedback", PostController.PostFeedback).Methods("POST")
+
+	router.HandleFunc("/getfeedbacks", GetController.GetAllFeedbacks).Methods("GET")
+	fmt.Println("Service Running in port 5001")
+
+	if err := http.ListenAndServe("localhost:5001", router); err != nil {
+		fmt.Println("error from the server: ", err)
+	}
+}
+package MMErr
+
+import (
+	"net/http"
+)
+
+type AppError struct {
+	Code    int    `json:",omitempty"`
+	Message string `json:"message"`
+}
+
+func (e AppError) AsMessage() *AppError {
+	return &AppError{
+		Message: e.Message,
+	}
+}
+
+func NewNoContentError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusNoContent,
+	}
+}
+
+func NewUnexpectedError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusInternalServerError,
+	}
+}
+
+func NewBadRequestError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusBadRequest,
+	}
+}
+
+func NewAuthenticationError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusUnauthorized,
+	}
+}
+
+func NewAuthorizationError(message string) *AppError {
+	return &AppError{
+		Message: message,
+		Code:    http.StatusForbidden,
+	}
+}
+package MongoConnect
+
+import (
+	"context"
+	MMErr "feedback/mmerror"
+	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type MongoDBInterface interface {
+	GetAppClient() (*mongo.Database, *MMErr.AppError)
+	GetUserClient(database string) (*mongo.Database, *MMErr.AppError)
+}
+
+func NewMongo() MongoDB {
+	return MongoDB{}
+}
+
+type MongoDB struct{}
+
+func (db *MongoDB) GetAppClient() (*mongo.Database, *MMErr.AppError) {
+	secrets := getSecrets()
+	client, err := db.connectToMongo(secrets.MongoDBURI, secrets.AppDatabase)
+	if err != nil {
+		return nil, err
+	}
+	return client.Database(secrets.AppDatabase), nil
+}
+
+func (db *MongoDB) GetUserClient(database string) (*mongo.Database, *MMErr.AppError) {
+	secrets := getSecrets()
+	client, err := db.connectToMongo(secrets.MongoDBURI, database)
+	if err != nil {
+		return nil, err
+	}
+	return client.Database(database), nil
+}
+
+func (db *MongoDB) connectToMongo(connectionString, database string) (*mongo.Client, *MMErr.AppError) {
+	clientOptions := options.Client().ApplyURI(connectionString)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		return nil, MMErr.NewUnexpectedError(err.Error())
+	}
+	return client, nil
+}
+
+func getSecrets() *Secrets {
+	// Implement this function to get the MongoDB connection URI and Application Database name.
+	// This is just a placeholder and needs to be replaced with actual implementation.
+	return &Secrets{
+		MongoDBURI:  "mongodb+srv://devreader:MuleMigration%40123!!@mulemigration-dev.vnsm7lg.mongodb.net/",
+		AppDatabase: "ApplicationDB",
+	}
+}
+
+type Secrets struct {
+	MongoDBURI  string
+	AppDatabase string
+}
+# Introduction 
+TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+
+# Getting Started
+TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
+1.	Installation process
+2.	Software dependencies
+3.	Latest releases
+4.	API references
+
+# Build and Test
+TODO: Describe and show how to build your code and run the tests. 
+
+# Contribute
+TODO: Explain how other users and developers can contribute to make your code better. 
+
+If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
+- [ASP.NET Core](https://github.com/aspnet/Home)
+- [Visual Studio Code](https://github.com/Microsoft/vscode)
+- [Chakra Core](https://github.com/Microsoft/ChakraCore)package Repository
+
+import (
+	"context"
+	"feedback/dto"
+	MMLogger "feedback/logger"
+	MongoConnect "feedback/mongoconnect"
+	"fmt"
+	"time"
+
+	MMErr "feedback/mmerror"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+var log MMLogger.Logger
+
+type GetFeedbackRepository struct {
+	client MongoConnect.MongoDBInterface
+}
+
+type GetFeedBackRepoI interface {
+	FetchFeedbacks(request dto.Feedback) (*dto.GetFeedBackResponse, *MMErr.AppError)
+}
+
+func NewGetFeedbackRepository(db MongoConnect.MongoDBInterface) GetFeedbackRepository {
+	return GetFeedbackRepository{client: db}
+}
+
+func (r GetFeedbackRepository) FetchFeedbacks(request dto.Feedback) (*dto.GetFeedBackResponse, *MMErr.AppError) {
+
+	feedbacks := make([]dto.ProjectFeedback, 0)
+	AppDb, AppDbErr := r.client.GetAppClient()
+	if AppDbErr != nil {
+		log.Error("Error getting Application Client", AppDbErr)
+		return nil, AppDbErr
+	}
+	feedbackCollection := AppDb.Collection("ProjectFeedback")
+	// ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
+
+	var pipeline bson.A
+
+	lookupStage := bson.D{
+		{Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: "UserDetail"},
+			{Key: "localField", Value: "user_id"},
+			{Key: "foreignField", Value: "_id"},
+			{Key: "as", Value: "User_Detail"},
+		}},
+	}
+	pipeline = append(pipeline, lookupStage)
+
+	unwindStage := bson.D{{Key: "$unwind", Value: "$User_Detail"}}
+	pipeline = append(pipeline, unwindStage)
+
+	if request.FeedbackFilterObj.ProjectName != "" {
+		projectMatchStage := bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "project_name", Value: bson.D{{Key: "$eq", Value: request.FeedbackFilterObj.ProjectName}}},
+			}},
+		}
+		pipeline = append(pipeline, projectMatchStage)
+	}
+
+	if request.FeedbackFilterObj.OrganizationName != "" {
+		organizationMatchStage := bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "organization_name", Value: bson.D{{Key: "$eq", Value: request.FeedbackFilterObj.OrganizationName}}},
+			}},
+		}
+		pipeline = append(pipeline, organizationMatchStage)
+	}
+
+	if request.FeedbackFilterObj.Rating != 0 {
+		ratingMatchStage := bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "feedback_rating", Value: bson.D{{Key: "$eq", Value: request.FeedbackFilterObj.Rating}}},
+			}},
+		}
+		pipeline = append(pipeline, ratingMatchStage)
+	}
+
+	if request.FeedbackFilterObj.FromDate != "" {
+		dateStr := request.FeedbackFilterObj.FromDate
+		layout := "02/01/2006"
+		fromDate, err := time.Parse(layout, dateStr)
+		if err != nil {
+			log.Error("error in date conversion:", err)
+			return nil, MMErr.NewUnexpectedError("The Date conversion error")
+		}
+		bsonDateTime := primitive.NewDateTimeFromTime(fromDate)
+		projectMatchStage := bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "created_on", Value: bson.D{{Key: "$gte", Value: bsonDateTime}}},
+			}},
+		}
+		pipeline = append(pipeline, projectMatchStage)
+	}
+
+	if request.FeedbackFilterObj.EndDate != "" {
+		dateStr := request.FeedbackFilterObj.EndDate
+		layout := "02/01/2006"
+		fromDate, err := time.Parse(layout, dateStr)
+		if err != nil {
+			log.Error("error in date conversion:", err)
+			return nil, MMErr.NewUnexpectedError("The Date conversion error")
+		}
+		bsonDateTime := primitive.NewDateTimeFromTime(fromDate)
+		projectMatchStage := bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "created_on", Value: bson.D{{Key: "$lte", Value: bsonDateTime}}},
+			}},
+		}
+		pipeline = append(pipeline, projectMatchStage)
+	}
+
+	sortValue := -1 //default descending order
+	if request.FeedbackSort.Order == "asc" {
+		sortValue = 1
+	}
+
+	if request.FeedbackSort.Column != "" {
+		sortStage := bson.D{{Key: "$sort", Value: bson.D{{Key: request.FeedbackSort.Column, Value: sortValue}}}}
+		pipeline = append(pipeline, sortStage)
+	}
+
+	offset := 0
+	if request.Offset != 0 {
+		offset = request.Offset
+	}
+	skipStage := bson.D{{Key: "$skip", Value: offset}}
+	pipeline = append(pipeline, skipStage)
+
+	limit := 10
+
+	if request.Limit != 0 {
+		limit = request.Limit
+	}
+
+	limitStage := bson.D{{Key: "$limit", Value: limit}}
+	pipeline = append(pipeline, limitStage)
+
+	//to search the user name
+	addFieldStage := bson.D{
+		{Key: "$addFields", Value: bson.D{
+			{Key: "fullName", Value: bson.D{
+				{Key: "$concat", Value: bson.A{
+					"$User_Detail.first_name",
+					" ",
+					"$User_Detail.last_name",
+				}},
+			}},
+		}},
+	}
+
+	pipeline = append(pipeline, addFieldStage)
+
+	if request.FeedbackSearchField != "" {
+		searchStage := bson.D{
+
+			{Key: "$match", Value: bson.D{
+				{Key: "$or", Value: bson.A{
+					bson.D{{Key: "organization_name", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}, {Key: "$options", Value: "i"}}}},
+					bson.D{{Key: "feedback_comment", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}, {Key: "$options", Value: "i"}}}},
+					bson.D{{Key: "last_modified_by", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}, {Key: "$options", Value: "i"}}}},
+					bson.D{{Key: "project_name", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}, {Key: "$options", Value: "i"}}}},
+					bson.D{{Key: "User_Detail.first_name", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}, {Key: "$options", Value: "i"}}}},
+					bson.D{{Key: "User_Detail.last_name", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}, {Key: "$options", Value: "i"}}}},
+					bson.D{{Key: "fullName", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}, {Key: "$options", Value: "i"}}}}, // Include user name in the search
+					// Include user name in the search
+
+					// bson.D{{Key: "$unwind", Value: "$User_Detail"}},
+					// bson.D{
+					// 	{Key: "$expr", Value: bson.D{
+					// 		{Key: "$regexMatch", Value: bson.D{
+					// 			{Key: "input", Value: bson.D{
+					// 				{Key: "$concat", Value: bson.A{"$User_Detail.first_name", " ", "$User_Details.last_name"}},
+					// 			}},
+					// 			{Key: "regex", Value: request.FeedbackSearchField},
+					// 			{Key: "options", Value: "i"},
+					// 		}},
+					// 	}},
+					// // },
+					// bson.D{
+					// 	{Key: "$project",
+					// 		Value: bson.D{
+					// 			{Key: "name",
+					// 				Value: bson.D{
+					// 					{Key: "$concat",
+					// 						Value: bson.A{
+					// 							"$User_Detail.first_name",
+					// 							" ",
+					// 							"$User_Detail.last_name",
+					// 						},
+					// 					},
+					// 				},
+					// 			},
+					// 		},
+					// 	},
+					// },
+					// bson.D{{Key: "$match", Value: bson.D{{Key: "name", Value: bson.D{{Key: "$regex", Value: request.FeedbackSearchField}}}}}},
+				}},
+			}},
+		}
+		pipeline = append(pipeline, searchStage)
+	}
+
+	// 			Value: bson.D{
+	// 				{Key: "$dateToString",
+	// 					Value: bson.D{
+	// 						{Key: "format", Value: "%d/%m/%Y %H:%M"},
+	// 						{Key: "date", Value: "$created_on"},
+	// 					},
+	// 				},
+	// 			},
+	// 		},
+	// 	}},
+	// }
+
+	projectStage := bson.D{
+		{
+			Key: "$project", Value: bson.D{
+				{Key: "total_count", Value: bson.D{
+					{Key: "$sum", Value: 1},
+				}},
+				{Key: "user_name", Value: bson.D{
+					{Key: "$concat", Value: bson.A{"$User_Detail.first_name", " ", "$User_Detail.last_name"}},
+				}},
+				{Key: "feedback_rating", Value: 1},
+				{Key: "feedback_comment", Value: 1},
+				{Key: "organization_name", Value: 1},
+				{Key: "project_name", Value: 1},
+				{Key: "_id", Value: 0},
+				{Key: "created_on", Value: bson.D{
+					{Key: "$dateToString", Value: bson.D{
+						{Key: "format", Value: "%d/%m/%Y %H:%M"},
+						{Key: "date", Value: "$created_on"},
+					}},
+				}},
+			},
+		},
+	}
+
+	pipeline = append(pipeline, projectStage)
+
+	cursor, err := feedbackCollection.Aggregate(context.Background(), pipeline)
+	if err != nil {
+		log.Info("The Fetching Feedback error:", err)
+		return nil, MMErr.NewUnexpectedError("Error while executing the query")
+	}
+	log.Info("Cursor for the feeback: ", cursor)
+	defer cursor.Close(context.Background())
+
+	for cursor.Next(context.TODO()) {
+		var feedback dto.ProjectFeedback
+		cursor.Decode(&feedback)
+		feedbacks = append(feedbacks, feedback)
+		log.Info("decoded feedback:", feedbacks)
+	}
+
+	log.Info("decode feedback: ", feedbacks)
+	if err := cursor.Err(); err != nil {
+		return nil, MMErr.NewUnexpectedError("Decode feedback error")
+	}
+
+	//
+
+	if len(feedbacks) == 0 {
+		return nil, MMErr.NewNoContentError("No feedback found")
+	}
+
+	distinctValues := bson.A{
+		bson.D{
+			{Key: "$group",
+				Value: bson.D{
+					{Key: "_id", Value: primitive.Null{}},
+					{Key: "distinct_feedback_ratings", Value: bson.D{{Key: "$addToSet", Value: "$feedback_rating"}}},
+					{Key: "distinct_project_names", Value: bson.D{{Key: "$addToSet", Value: "$project_name"}}},
+					{Key: "distinct_organization_names", Value: bson.D{{Key: "$addToSet", Value: "$organization_name"}}},
+				},
+			},
+		},
+	}
+
+	fbCollection := AppDb.Collection("ProjectFeedback")
+
+	DistinctValuesCursor, err := fbCollection.Aggregate(context.Background(), distinctValues)
+	if err != nil {
+		log.Error("Getting the distinctValues error")
+		return nil, MMErr.NewUnexpectedError("Getting distinctValues error")
+	}
+
+	defer DistinctValuesCursor.Close(context.Background())
+
+	//
+	var DistinctValues dto.DistinctValues
+
+	if DistinctValuesCursor.Next(context.Background()) {
+
+		if err := DistinctValuesCursor.Decode(&DistinctValues); err != nil {
+			// Handle error
+			fmt.Println("Error decoding distinct values:", err.Error())
+		}
+	}
+
+	//geting total count
+
+	totalFB := bson.A{
+		bson.D{{Key: "$match", Value: bson.D{{Key: "is_active", Value: 1}}}},
+		bson.D{
+			{Key: "$group",
+				Value: bson.D{
+					{Key: "_id", Value: primitive.Null{}},
+					{Key: "total_count", Value: bson.D{{Key: "$sum", Value: 1}}},
+				},
+			},
+		},
+	}
+	totalFBcursor, err := fbCollection.Aggregate(context.Background(), totalFB)
+
+	if err != nil {
+		return nil, MMErr.NewUnexpectedError("Error while Getting the total count")
+	}
+	defer totalFBcursor.Close(context.Background())
+
+	var count dto.TotalCount
+
+	if totalFBcursor.Next(context.Background()) {
+		if err := totalFBcursor.Decode(&count); err != nil {
+			log.Error("Failed to decode the total count", err)
+			return nil, MMErr.NewUnexpectedError("Error while decoding  the total count")
+		}
+	}
+
+	// var orgResult []string
+	// for _, organization := range organizations {
+	// 	orgResult = append(orgResult, organization.Organization_name)
+	// }
+
+	// var ratingResult []int
+	// for _, r := range ratings {
+	// 	ratingResult = append(ratingResult, r.Rating)
+	// }
+
+	return &dto.GetFeedBackResponse{TotalCount: count.TotalCount, FeedbackDetails: feedbacks, ProjectNames: DistinctValues.ProjectName, Orgnames: DistinctValues.Organization_name, Ratings: DistinctValues.Feedback_rating}, nil
+}
+package Repository
+
+import (
+	"context"
+	"feedback/dto"
+	MMErr "feedback/mmerror"
+	MongoConnect "feedback/mongoconnect"
+	"net/http"
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type PostFeedbackRepository struct {
+	client MongoConnect.MongoDBInterface
+}
+
+type PostFeedbackRepoI interface {
+	InsertFeedback(request dto.Request) (*dto.PostResponse, *MMErr.AppError)
+}
+
+func NewPostFeedbackRepository(db MongoConnect.MongoDBInterface) PostFeedbackRepository {
+	log.SetLevel(2)
+	return PostFeedbackRepository{client: db}
+}
+
+func (r *PostFeedbackRepository) InsertFeedback(request dto.Request) (*dto.PostResponse, *MMErr.AppError) {
+
+	AppDb, AppDbErr := r.client.GetAppClient()
+	if AppDbErr != nil {
+		log.Error("Error getting Application Client", AppDbErr)
+		return nil, AppDbErr
+	}
+
+	feedbackCollection := AppDb.Collection("ProjectFeedback")
+	userDetailCollection := AppDb.Collection("UserDetail")
+	organizationDetail := AppDb.Collection("OrganizationDetail")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	user_id, err := primitive.ObjectIDFromHex(request.UserId)
+	if err != nil {
+		log.Error("Error", err)
+		return nil, MMErr.NewUnexpectedError("failed to decode the user id from hex")
+	}
+
+	//PC_NO_1.25 - //PC_NO_1.30
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "_id", Value: bson.D{{Key: "$eq", Value: user_id}}},
+		}}},
+		{{Key: "$project", Value: bson.D{
+			{Key: "organization_id", Value: 1},
+		}}},
+	}
+
+	cursor, err := userDetailCollection.Aggregate(context.Background(), pipeline)
+
+	if err != nil {
+		log.Error("Error", err)
+		return nil, MMErr.NewUnexpectedError("Failed in fetching the organization id from the database")
+	}
+
+	defer cursor.Close(context.Background())
+
+	var user dto.PostUserDetails
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		cursor.Decode(&user)
+	}
+
+	if err := cursor.Err(); err != nil {
+		log.Error("Error", err)
+		return nil, MMErr.NewUnexpectedError("Failed to decode the user details")
+	}
+
+	//PC_NO_1.31 - //PC_NO_1.34
+	pipeline = mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "_id", Value: bson.D{{Key: "$eq", Value: user.Organization_ID}}},
+		}}},
+		{{Key: "$project", Value: bson.D{
+			{Key: "organization_id", Value: 1},
+			{Key: "organization_name", Value: 1},
+		}}},
+	}
+
+	cursor, err = organizationDetail.Aggregate(context.Background(), pipeline)
+
+	if err != nil {
+		log.Error("Error", err)
+		return nil, MMErr.NewUnexpectedError("Failed to fetch the organization details")
+	}
+
+	var org dto.OrgDetails
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		cursor.Decode(&org)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, MMErr.NewUnexpectedError("Failed to decode the organization details")
+	}
+
+	project_id, err2 := primitive.ObjectIDFromHex(request.ProjectId)
+	if err2 != nil {
+		return nil, MMErr.NewUnexpectedError("Failed to decode the project id from hex")
+	}
+
+	//PC_NO_1.35- PC_NO_1.38
+
+	respone := dto.PostProjectFeedback{
+		ProjectID:        project_id,
+		ProjectName:      request.ProjectName,
+		UserID:           user_id,
+		OrganizationName: org.OrganizationName,
+		FeedbackRating:   request.FeedbackRating,
+		FeedbackComment:  request.FeedbackComment,
+		CreatedBy:        user_id,
+		CreatedOn:        time.Now(),
+		ModifiedBy:       user_id,
+		ModifiedOn:       time.Now(),
+		IsActive:         1,
+	}
+
+	_, Updateerr := feedbackCollection.InsertOne(context.Background(), respone)
+
+	if Updateerr != nil {
+		return nil, MMErr.NewUnexpectedError("Failed to insert the post feedback into the database")
+	}
+
+	return &dto.PostResponse{StatusCode: http.StatusCreated, StatusMessage: "Sucessfully Inserted the Feedback."}, nil
+}
+package Service
+
+import (
+	"errors"
+	repository "feedback/Repository"
+	"feedback/dto"
+	MMLogger "feedback/logger"
+)
+
+var log MMLogger.Logger
+
+type GetFeedbackService struct {
+	repo repository.GetFeedBackRepoI
+}
+
+type GetFeedBackServiceI interface {
+	GetAllFeedbacks(request dto.Feedback) (*dto.GetFeedBackResponse, error)
+}
+
+func NewGetFeedbackService(repo repository.GetFeedBackRepoI) GetFeedbackService {
+	return GetFeedbackService{repo: repo}
+}
+
+func (s GetFeedbackService) GetAllFeedbacks(request dto.Feedback) (*dto.GetFeedBackResponse, error) {
+
+	FeedbackData, err := s.repo.FetchFeedbacks(request)
+
+	if err != nil {
+
+		return nil, errors.New(err.Message)
+	}
+
+	if len(FeedbackData.FeedbackDetails) == 0 {
+		return nil, errors.New("No Content Found")
+	}
+
+	return FeedbackData, nil
+}
+package Service
+
+import (
+	"errors"
+	repository "feedback/Repository"
+	"feedback/dto"
+)
+
+type PostFeedbackService struct {
+	repo repository.PostFeedbackRepoI
+}
+
+type PostFeedBackServiceI interface {
+	PostFeedback(request dto.Request) (*dto.PostResponse, error)
+}
+
+func NewPostFeedbackService(repo repository.PostFeedbackRepoI) PostFeedbackService {
+
+	log.SetLevel(2)
+	return PostFeedbackService{repo: repo}
+}
+
+// PC_NO_1.19 - PC_NO_1.20
+func (s *PostFeedbackService) PostFeedback(request dto.Request) (*dto.PostResponse, error) {
+
+	postResponse, err := s.repo.InsertFeedback(request)
+	//PC_NO_1.45 - PC_NO_1.47
+	if err != nil {
+		log.Error("Error getting repo response " + err.Message)
+		return nil, errors.New(err.Message)
+	}
+
+	return postResponse, nil
+}
+package MongoConnect
+
+import (
+	"context"
+	MMErr "postFeedback/mmerror"
+	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type MongoDBInterface interface {
+	GetAppClient() (*mongo.Database, *MMErr.AppError)
+	GetUserClient(database string) (*mongo.Database, *MMErr.AppError)
+}
+
+func NewMongo() MongoDB {
+	return MongoDB{}
+}
+
+type MongoDB struct{}
+
+func (db *MongoDB) GetAppClient() (*mongo.Database, *MMErr.AppError) {
+	secrets := getSecrets()
+	client, err := db.connectToMongo(secrets.MongoDBURI, secrets.AppDatabase)
+	if err != nil {
+		return nil, err
+	}
+	return client.Database(secrets.AppDatabase), nil
+}
+
+func (db *MongoDB) GetUserClient(database string) (*mongo.Database, *MMErr.AppError) {
+	secrets := getSecrets()
+	client, err := db.connectToMongo(secrets.MongoDBURI, database)
+	if err != nil {
+		return nil, err
+	}
+	return client.Database(database), nil
+}
+
+func (db *MongoDB) connectToMongo(connectionString, database string) (*mongo.Client, *MMErr.AppError) {
+	clientOptions := options.Client().ApplyURI(connectionString)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		return nil, MMErr.NewUnexpectedError(err.Error())
+	}
+	return client, nil
+}
+
+func getSecrets() *Secrets {
+	// Implement this function to get the MongoDB connection URI and Application Database name.
+	// This is just a placeholder and needs to be replaced with actual implementation.
+	return &Secrets{
+		MongoDBURI:  "mongodb+srv://devreader:MuleMigration%40123!!@mulemigration-dev.vnsm7lg.mongodb.net/",
+		AppDatabase: "ApplicationDB",
+	}
+}
+
+type Secrets struct {
+	MongoDBURI  string
+	AppDatabase string
+}
+package OpenAI
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io/ioutil"
+	"net/http"
+	MMLogger "postFeedback/logger"
+	MMErr "postFeedback/mmerror"
+)
+
+var log *MMLogger.Logger
+
+type ChatRequest struct {
+	Request string
+}
+
+type ChatResponse struct {
+	Response string
+}
+
+type OpenAI struct{}
+
+type OpenAiInterface interface {
+	GetChatResponse(chatRequest *ChatRequest) (*ChatResponse, *MMErr.AppError)
+}
+
+func NewOpenAI() OpenAI {
+	return OpenAI{}
+}
+
+const API_KEY = "your_api_key"
+const API_URL = "https://api.openai.com/v1/engines/davinci-codex/completions"
+
+func (*OpenAI) GetChatResponse(chatRequest *ChatRequest) (*ChatResponse, *MMErr.AppError) {
+	log = MMLogger.NewLogger()
+	requestBody, err := json.Marshal(chatRequest.Request)
+	if err != nil {
+		log.Info("Internal Server Error", err.Error())
+		return nil, MMErr.NewUnexpectedError(err.Error())
+	}
+
+	req, err := http.NewRequest("POST", API_URL, bytes.NewBuffer(requestBody))
+	if err != nil {
+		log.Info("Internal Server Error", err.Error())
+		return nil, MMErr.NewUnexpectedError(err.Error())
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+API_KEY)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Info("Internal Server Error", err.Error())
+		return nil, MMErr.NewUnexpectedError(err.Error())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		log.Info("Internal Server Error", err.Error())
+		return nil, MMErr.NewUnexpectedError(errors.New("received non-200 response from OpenAI Chat API").Error())
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Info("Internal Server Error", err.Error())
+		return nil, MMErr.NewUnexpectedError(err.Error())
+	}
+
+	var chatResponse ChatResponse
+	err = json.Unmarshal(body, &chatResponse.Response)
+	if err != nil {
+		log.Info("Internal Server Error", err.Error())
+		return nil, MMErr.NewUnexpectedError(errors.New("failed to unmarshal response body").Error())
+	}
+
+	return &chatResponse, nil
+}
+# Introduction 
+TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+
+# Getting Started
+TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
+1.	Installation process
+2.	Software dependencies
+3.	Latest releases
+4.	API references
+
+# Build and Test
+TODO: Describe and show how to build your code and run the tests. 
+
+# Contribute
+TODO: Explain how other users and developers can contribute to make your code better. 
+
+If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
+- [ASP.NET Core](https://github.com/aspnet/Home)
+- [Visual Studio Code](https://github.com/Microsoft/vscode)
+- [Chakra Core](https://github.com/Microsoft/ChakraCore)package repository
+
+import (
+	"context"
+	"fmt"
+	"postFeedback/dto"
+	MMErr "postFeedback/mmerror"
+	MongoConnect "postFeedback/mongoconnect"
+	"time"
+
+	"github.com/gofiber/fiber/v2/log"
+	"go.mongodb.org/mongo-driver/bson"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type PostFeedbackRepository struct {
+	client MongoConnect.MongoDBInterface
+}
+
+type PostFeedbackRepoI interface {
+	InsertFeedback(request dto.Request) (*dto.Response, *MMErr.AppError)
+}
+
+func NewFeedbackRepository(db MongoConnect.MongoDBInterface) PostFeedbackRepository {
+	return PostFeedbackRepository{client: db}
+}
+
+func (r *PostFeedbackRepository) InsertFeedback(request dto.Request) (*dto.Response, *MMErr.AppError) {
+
+	AppDb, AppDbErr := r.client.GetAppClient()
+	if AppDbErr != nil {
+		log.Error("Error getting Application Client", AppDbErr)
+		return nil, AppDbErr
+	}
+
+	feedbackCollection := AppDb.Collection("ProjectFeedback")
+	userDetailCollection := AppDb.Collection("UserDetail")
+	organizationDetail := AppDb.Collection("OrganizationDetail")
+
+	ctx, _ := context.WithTimeout(context.Background(), 30*time.Second)
+
+	user_id, err2 := primitive.ObjectIDFromHex(request.UserId)
+	if err2 != nil {
+		log.Error("Error", err2)
+		return nil, MMErr.NewUnexpectedError("failed to decode the user id from hex")
+	}
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "_id", Value: bson.D{{Key: "$eq", Value: user_id}}},
+		}}},
+		{{Key: "$project", Value: bson.D{
+			{Key: "organization_id", Value: 1},
+		}}},
+	}
+
+	cursor, err := userDetailCollection.Aggregate(context.Background(), pipeline)
+
+	if err != nil {
+		log.Error("Error", err)
+		return nil, MMErr.NewUnexpectedError("Failed in fetching the organization id from the database")
+	}
+
+	defer cursor.Close(context.Background())
+
+	var user dto.UserDetails
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		cursor.Decode(&user)
+		log.Info("cursoeerrrr", user)
+	}
+
+	if err := cursor.Err(); err != nil {
+		log.Error("Error", err)
+		return nil, MMErr.NewUnexpectedError("Failed to decode the user details")
+	}
+
+	pipeline = mongo.Pipeline{
+		{{Key: "$match", Value: bson.D{
+			{Key: "_id", Value: bson.D{{Key: "$eq", Value: user.Organization_ID}}},
+		}}},
+		{{Key: "$project", Value: bson.D{
+			{Key: "organization_id", Value: 1},
+			{Key: "organization_name", Value: 1},
+		}}},
+	}
+
+	cursor, err = organizationDetail.Aggregate(context.Background(), pipeline)
+
+	if err != nil {
+		log.Error("Error", err2)
+		return nil, MMErr.NewUnexpectedError("Failed to fetch the organization details")
+	}
+
+	var org dto.OrgDetails
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		cursor.Decode(&org)
+		log.Info("Cursor:", org)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, MMErr.NewUnexpectedError("Failed to decode the organization details")
+	}
+
+	project_id, err2 := primitive.ObjectIDFromHex(request.ProjectId)
+	if err2 != nil {
+		return nil, MMErr.NewUnexpectedError("failed to decode the project id from hex")
+	}
+
+	fmt.Println("The organization name", org.OrganizationName)
+
+	respone := dto.ProjectFeedback{
+		ProjectID:        project_id,
+		ProjectName:      request.ProjectName,
+		UserID:           user_id,
+		OrganizationName: org.OrganizationName,
+		FeedbackRating:   request.FeedbackRating,
+		FeedbackComment:  request.FeedbackComment,
+		CreatedBy:        user_id,
+		CreatedOn:        time.Now(),
+		ModifiedBy:       user_id,
+		ModifiedOn:       time.Now(),
+		IsActive:         1,
+	}
+
+	_, err = feedbackCollection.InsertOne(context.Background(), respone)
+
+	if err != nil {
+		return nil, MMErr.NewUnexpectedError("Failed to insert the post feedback into the database")
+	}
+
+	return &dto.Response{StatusCode: "201", StatusMessage: "Sucessfully Inserted the Feedback."}, nil
+}
+package service
+
+import (
+	repository "postFeedback/Repository"
+	"postFeedback/dto"
+	MMErr "postFeedback/mmerror"
+)
+
+type PostFeedbackService struct {
+	repo repository.PostFeedbackRepoI
+}
+
+type PostFeedBackServiceI interface {
+	PostFeedback(request dto.Request) (*dto.Response, *MMErr.AppError)
+}
+
+func NewFeedbackService(repo repository.PostFeedbackRepoI) PostFeedbackService {
+	return PostFeedbackService{repo: repo}
+}
+
+func (s *PostFeedbackService) PostFeedback(request dto.Request) (*dto.Response, *MMErr.AppError) {	
+
+	feedback, err := s.repo.InsertFeedback(request)
+	if err != nil {
+		return nil, MMErr.NewUnexpectedError("Cursor Error")
+	}
+
+	return feedback, nil
+}
